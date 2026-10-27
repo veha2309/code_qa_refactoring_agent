@@ -1,0 +1,10 @@
+{
+  "version": "demo-evaluation-v1",
+  "cases": [
+    {"id": "tax-total", "seeds": ["invoice.py:calculate_invoice_total"], "relevant_tests": ["test_invoice.py:test_invoice_tax", "test_invoice.py:test_invoice_zero", "test_invoice.py:test_invoice_rounding", "test_invoice.py:test_invoice_service", "test_invoice.py:test_invoice_route"]},
+    {"id": "invoice-service", "seeds": ["invoice.py:create_invoice"], "relevant_tests": ["test_invoice.py:test_invoice_service", "test_invoice.py:test_invoice_route"]},
+    {"id": "discount", "seeds": ["invoice.py:apply_discount"], "relevant_tests": ["test_invoice.py:test_discount"]},
+    {"id": "shipping", "seeds": ["invoice.py:shipping_cost"], "relevant_tests": ["test_invoice.py:test_shipping"]}
+  ]
+}
+

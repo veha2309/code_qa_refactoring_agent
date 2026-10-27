@@ -1,0 +1,13 @@
+# Automatic workflow and presentation-model verification
+
+The normal flow is open → edit → save → review. Git HEAD or a persistent first-open comparison point is selected automatically. Filesystem events and saves queue a debounced background check. Automatic checks preserve unsaved buffers and editor navigation. Tests remain explicit, initially trust-gated actions; patches remain preview-and-apply actions.
+
+`tests/test_automation.py` covers first-open recording, preservation on reopen, Git/unborn repositories, save-triggered checks, default test selection, external changes, clean-buffer reload, new files in new directories, automatic rename preview, and protection of unsaved buffers. `tests/test_local_ai.py` covers fixed-loopback transport, cloud rejection, bounded prompts, the small-model preset, switching/unloading, duplicate suffix handling, ghost text acceptance/dismissal/undo, rejected generated signatures/imports, and explicit reviewed application with backups.
+
+The portable preset is Qwen2.5-Coder 1.5B base for fill-in-the-middle autocomplete and Qwen2.5-Coder 3B for explanations/rewrite proposals, with 2,048-token contexts. Models and Ollama are separate, one-time setup downloads. No paid provider is required. The app does not automatically select installed 30B models and does not use the current development machine's GPU as the deployment target.
+
+Real model checks are recorded in `local_ai_completion.json` and `local_ai_rewrite.json`. Three controlled completions produced syntactically valid code; a controlled 3B rewrite preserved its signature and passed syntax validation while leaving the source unchanged. Generated outputs were not executed in these checks. These are narrow functional checks, not quality benchmarks.
+
+The first completion took approximately 33 seconds including cold initialization on the current i9/RTX 4090 development machine; subsequent controlled requests were much faster. These figures do not predict RTX 3050 latency. Use **Assistant → Check presentation readiness** on the actual 16 GB / 4 GB GPU laptop, or run `python -m scripts.benchmark_local_ai --output evaluation/presentation_laptop.json`. Keep other GPU applications closed when assessing available headroom. The UI remains responsive and exposes cancellation during model loading/inference.
+
+Primary interfaces: [Ollama generation API](https://docs.ollama.com/api/generate), [local model listing](https://docs.ollama.com/api/tags), [Qwen fill-in-the-middle examples](https://github.com/QwenLM/Qwen3-Coder/blob/main/examples/Qwen2.5-Coder-fim.py). Model output is untrusted proposed code. Static checks and selected tests do not prove semantic equivalence.

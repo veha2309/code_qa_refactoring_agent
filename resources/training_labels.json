@@ -1,0 +1,15 @@
+{
+  "version": "synthetic-v1",
+  "provenance": "Hand-authored controlled stock, user and geometry scenarios. No public evaluation examples used.",
+  "cases": [
+    {"id": "stock-add", "seeds": ["operations.py:add_stock"], "relevant_tests": ["test_operations.py:test_add_stock", "test_operations.py:test_add_empty_stock"]},
+    {"id": "stock-remove", "seeds": ["operations.py:remove_stock"], "relevant_tests": ["test_operations.py:test_remove_stock"]},
+    {"id": "stock-available", "seeds": ["operations.py:stock_available"], "relevant_tests": ["test_operations.py:test_stock_available"]},
+    {"id": "catalog", "seeds": ["operations.py:catalog_price"], "relevant_tests": ["test_operations.py:test_catalog_price"]},
+    {"id": "normalization", "seeds": ["operations.py:normalize_username"], "relevant_tests": ["test_operations.py:test_normalize_username", "test_operations.py:test_validate_username", "test_operations.py:test_short_username"]},
+    {"id": "validation", "seeds": ["operations.py:validate_username"], "relevant_tests": ["test_operations.py:test_validate_username", "test_operations.py:test_short_username"]},
+    {"id": "temperature", "seeds": ["operations.py:temperature_celsius"], "relevant_tests": ["test_operations.py:test_temperature_celsius"]},
+    {"id": "area", "seeds": ["operations.py:area_rectangle"], "relevant_tests": ["test_operations.py:test_area_rectangle"]}
+  ]
+}
+

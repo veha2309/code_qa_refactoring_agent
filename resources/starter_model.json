@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "dataset_version": "synthetic-v1",
+  "features": [
+    "lexical_overlap",
+    "symbol_overlap",
+    "path_overlap",
+    "same_module_reference",
+    "inverse_graph_distance"
+  ],
+  "coefficients": [
+    1.4146873976944223,
+    2.6863540481972956,
+    0.0004615801795536214,
+    0.0004615801795536214,
+    2.5863084013820767
+  ],
+  "intercept": -1.9000104125309405,
+  "training_pairs": 80,
+  "positive_pairs": 12,
+  "sklearn_version": "1.7.2",
+  "training_snapshot": "92d7492ef5941c3a3674",
+  "seed": 42,
+  "limitations": "Synthetic starter data only; scores are not calibrated confidence."
+}

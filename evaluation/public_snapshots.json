@@ -1,0 +1,26 @@
+{
+  "requests": {
+    "repository": "psf/requests",
+    "tag": "v2.32.3",
+    "commit": "0e322af87745eff34caffe4df68456ebc20d9068",
+    "archive_sha256": "706ac73e0ff00779543dc4dceaf11127cc1d927c5bc551d74729107a70d9a311",
+    "url": "https://github.com/psf/requests/tree/0e322af87745eff34caffe4df68456ebc20d9068",
+    "execution": "never executed"
+  },
+  "flask": {
+    "repository": "pallets/flask",
+    "tag": "3.1.0",
+    "commit": "ab8149664182b662453a563161aa89013c806dc9",
+    "archive_sha256": "8e9fd863522ef7461ba578ec488541c032c75eb32a00cedb5439e2c1b45fee79",
+    "url": "https://github.com/pallets/flask/tree/ab8149664182b662453a563161aa89013c806dc9",
+    "execution": "never executed"
+  },
+  "click": {
+    "repository": "pallets/click",
+    "tag": "8.1.8",
+    "commit": "934813e4d421071a1b3db3973c02fe2721359a6e",
+    "archive_sha256": "266110f5eb2ac4b460c833636e2859d95de080f84786844969c930981db04cd2",
+    "url": "https://github.com/pallets/click/tree/934813e4d421071a1b3db3973c02fe2721359a6e",
+    "execution": "never executed"
+  }
+}

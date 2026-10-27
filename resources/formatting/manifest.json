@@ -1,0 +1,14 @@
+{
+  "prettier": "3.9.10",
+  "node": "24.12.0",
+  "prettier_integrity": "sha512-skGHTH1Yb9QvaTC4hWnRTzEYtCpApF0UMBPz+t/0ZPzP8ihefo/btKd+QA7pUE0fEwA1SbS/NmhyEcstdXOIdA==",
+  "files": {
+    "node.exe": "2ffe3acc0458fdde999f50d11809bbe7c9b7ef204dcf17094e325d26ace101d8",
+    "NODE_LICENSE": "537308465103a306d0e3eecf42632b4ff1b48aaaec044e9fc10a78c81fd00b34",
+    "prettier/LICENSE": "b0f2417199889f1c0d28ec4e0244eacf1a15de5819d61f641dd7d8f45153ac9c",
+    "prettier/standalone.mjs": "f1768fc437f0889f1548ec9d5d58c4ddea61f02e3dc85f9c3e371573465e770e",
+    "prettier/plugins/babel.mjs": "b97b31d647e6a31e62fd2d69b02b28f257c4f7511b037d2a277138a83ef8f7d7",
+    "prettier/plugins/estree.mjs": "a4c6f661c2a70ca8f02ae065324da643ef850026d0424c34e2f0b5ffdb7be066",
+    "prettier/plugins/typescript.mjs": "9e38df010db02c605c6dbd96d0e0fe12dcf4b88a652bd2f387cf4be8b270523f"
+  }
+}

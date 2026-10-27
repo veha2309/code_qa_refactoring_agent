@@ -1,0 +1,31 @@
+.venv/
+.runtime/
+__pycache__/
+.pytest_cache/
+*.pyc
+build/
+dist/
+*.egg-info/
+evaluation/repos/
+
+# Prepared by scripts/prepare_formatter.py; do not put runtime executables in Git.
+/resources/formatting/node.exe
+
+# Local verification artifacts may contain absolute paths or external project data.
+/evaluation/*
+!/evaluation/*.md
+!/evaluation/public_labels.json
+!/evaluation/public_snapshots.json
+!/evaluation/verification_summary.json
+
+# Credentials and local/editor state.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+

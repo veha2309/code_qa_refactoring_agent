@@ -1,0 +1,8 @@
+{
+  "name": "change-lens-web-demo",
+  "private": true,
+  "type": "module",
+  "description": "Static React example with dependency-free Node tests. React is not installed or launched by Change Lens.",
+  "dependencies": {"react": "^19.0.0"},
+  "engines": {"node": ">=20"}
+}

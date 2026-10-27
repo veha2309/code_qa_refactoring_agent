@@ -1,0 +1,26 @@
+{
+  "prototype": "Change Lens",
+  "verification_date": "2026-10-27",
+  "automated_suite": {
+    "passed": 167,
+    "warnings": "12 Rope deprecation warnings"
+  },
+  "packaged_smoke": {
+    "workflow_checks_passed": 12,
+    "formatter_checks_passed": 6,
+    "language_checks_passed": 11,
+    "core_stages_completed": 6,
+    "python_local_ai_stages_completed": 13
+  },
+  "controlled_flutter_sdk": {
+    "widget_tests_passed": 2,
+    "dependencies": "prepared using offline cached resolution",
+    "external_repository_tests_executed": false
+  },
+  "scope_notes": [
+    "Results recorded on the development machine; not a performance guarantee for presentation hardware.",
+    "Multi-language AI proposals are syntax/signature checked, not proven behavior preserving.",
+    "Public-source evaluation is Python-only with partial agent-reviewed relevance labels.",
+    "Raw machine-specific reports and external-project screenshots are intentionally not published."
+  ]
+}
