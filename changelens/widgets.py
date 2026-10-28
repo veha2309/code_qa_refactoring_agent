@@ -113,6 +113,16 @@ class Gutter(QWidget):
     def sizeHint(self):
         return QSize(self.editor.gutter_width(), 0)
 
+    def mousePressEvent(self,event):
+        if event.position().x()<10 and self.editor.change_marks:
+            block=self.editor.firstVisibleBlock();top=self.editor.blockBoundingGeometry(block).translated(self.editor.contentOffset()).top()
+            while block.isValid():
+                height=self.editor.blockBoundingRect(block).height()
+                if top<=event.position().y()<top+height:self.editor.goto_line(block.blockNumber()+1);break
+                top+=height;block=block.next()
+            self.editor.reviewRequested.emit();event.accept();return
+        super().mousePressEvent(event)
+
     def paintEvent(self, event):
         self.editor.paint_gutter(event)
 
@@ -126,15 +136,21 @@ class CodeEditor(QPlainTextEdit):
     definitionRequested = Signal()
     aiCompletionRequested = Signal()
     formatRequested = Signal()
+    reviewRequested = Signal()
 
     def __init__(self, readonly=False):
         super().__init__()
         self.setReadOnly(readonly)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.setFont(QFont("Roboto Mono", 10))
+        self.setCursorWidth(2)
+        self.setCenterOnScroll(False)
         self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * 4)
         self.highlighter = PythonHighlighter(self.document())
         self.gutter = Gutter(self)
+        self.opening_text=None;self.change_base_text=None;self.change_base_label="tab opening state";self.change_marks={};self.edit_hunks=[]
+        self.change_timer=QTimer(self);self.change_timer.setSingleShot(True);self.change_timer.setInterval(300);self.change_timer.timeout.connect(self.update_edit_marks)
+        self.textChanged.connect(lambda:self.change_timer.start() if not self.isReadOnly() else None)
         self.first_line = 1
         self.line_numbers = None
         self.diff_lines = {}
@@ -153,6 +169,7 @@ class CodeEditor(QPlainTextEdit):
         self._completion_model=QStringListModel(self);self.completer.setModel(self._completion_model)
         self.completer.activated.connect(self.insert_completion)
         self.completer.popup().installEventFilter(self)
+        self.popup_return_timer=QTimer(self);self.popup_return_timer.setSingleShot(True);self.popup_return_timer.timeout.connect(self.popup_newline)
         self.completion_timer = QTimer(self)
         self.completion_timer.setSingleShot(True)
         self.completion_timer.setInterval(400)
@@ -179,12 +196,14 @@ class CodeEditor(QPlainTextEdit):
 
     def paint_gutter(self, event):
         painter = QPainter(self.gutter)
-        painter.fillRect(event.rect(), QColor("#121c22"))
+        painter.fillRect(event.rect(), QColor("#191e25"))
         block = self.firstVisibleBlock()
         top = round(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
         while block.isValid() and top <= event.rect().bottom():
             height = round(self.blockBoundingRect(block).height())
             if block.isVisible() and top + height >= event.rect().top():
+                tag=self.change_marks.get(block.blockNumber())
+                if tag:painter.fillRect(1,top,4,4 if tag=='delete' else height,QColor({'insert':'#80ba9b','replace':'#d3b57e','delete':'#d38c8c'}[tag]))
                 painter.setPen(QColor("#c4c4c4") if block.blockNumber() == self.textCursor().blockNumber() else QColor("#737373"))
                 number = self.line_numbers[block.blockNumber()] if self.line_numbers is not None and block.blockNumber()<len(self.line_numbers) else block.blockNumber()+self.first_line
                 painter.drawText(0, top, self.gutter.width()-12, self.fontMetrics().height(), Qt.AlignmentFlag.AlignRight, str(number) if number is not None else "")
@@ -208,19 +227,38 @@ class CodeEditor(QPlainTextEdit):
             selection = QTextEdit.ExtraSelection()
             selection.cursor = self.textCursor()
             selection.cursor.clearSelection()
-            selection.format.setBackground(QColor("#1a282f"))
+            selection.format.setBackground(QColor("#222a33"))
             selection.format.setProperty(QTextCharFormat.Property.FullWidthSelection, True)
             selections.append(selection)
         self.setExtraSelections(selections)
         self.gutter.update()
 
     def set_code(self, code, line=1):
+        if self.opening_text is None:self.opening_text=code
+        if self.change_base_text is None:self.change_base_text=code
         self.first_line = line
         self.line_numbers = None
         self.setPlainText(code)
         self.document().setModified(False)
         self.update_margin()
         self.configure_indent()
+
+    def update_edit_marks(self):
+        if self.isReadOnly() or self.opening_text is None:return
+        from .edit_review import hunks
+        self.edit_hunks=hunks(self.change_base_text,self.toPlainText());self.change_marks={}
+        for h in self.edit_hunks:
+            for row in range(h['new_start'],max(h['new_start']+1,h['new_end'])):
+                self.change_marks[min(row,max(0,self.blockCount()-1))]=h['tag']
+        self.gutter.setToolTip(f'{len(self.edit_hunks)} changed hunks against {self.change_base_label}. Green: added; amber: modified; red: deletion. Click a marker to review/revert.')
+        self.gutter.update()
+
+    def next_edit(self,direction=1):
+        self.update_edit_marks();rows=sorted({h['new_start'] for h in self.edit_hunks})
+        if not rows:return
+        current=self.textCursor().blockNumber()
+        target=next((r for r in (rows if direction>0 else reversed(rows)) if (r>current if direction>0 else r<current)),rows[0] if direction>0 else rows[-1])
+        self.goto_line(target+1)
 
     def configure_indent(self):
         from .indentation import indent_style
@@ -302,8 +340,15 @@ class CodeEditor(QPlainTextEdit):
         if event.type()==QEvent.Type.KeyPress and hasattr(self,'completer') and watched is self.completer.popup():
             if event.key() in {Qt.Key.Key_Up,Qt.Key.Key_Down}:self._completion_navigated=True
             if event.key() in {Qt.Key.Key_Return,Qt.Key.Key_Enter} and not self._completion_explicit and not self._completion_navigated:
-                self.completer.popup().hide();self.keyPressEvent(event);return True
+                self.completer.popup().hide();self.popup_return_timer.start(0);return True
         return super().eventFilter(watched,event)
+
+    def popup_newline(self):
+        # Defer text mutation until Qt has finished dispatching the popup event.
+        self.completion_timer.stop();self.ai_timer.stop();self.clear_ghost()
+        if not self.isReadOnly():
+            self.smart_newline()
+            if self.ai_enabled:self.ai_timer.start()
 
     def line_parts(self):
         cursor=self.textCursor();raw=cursor.block().text().encode('utf-16-le');cut=cursor.positionInBlock()*2
@@ -333,6 +378,87 @@ class CodeEditor(QPlainTextEdit):
             edit.setPosition(first.position());edit.setPosition(max(first.position(),end+delta),QTextCursor.MoveMode.KeepAnchor)
         else:edit.setPosition(max(first.position(),start+delta))
         self.setTextCursor(edit)
+
+    def smart_home(self, select=False):
+        """Toggle between indentation and column zero, preserving Shift selection."""
+        cursor = self.textCursor()
+        line = cursor.block().text()
+        indent = len(line) - len(line.lstrip(' \t'))
+        target = 0 if cursor.positionInBlock() == indent else indent
+        cursor.setPosition(cursor.block().position() + target,
+                           QTextCursor.MoveMode.KeepAnchor if select else QTextCursor.MoveMode.MoveAnchor)
+        self.setTextCursor(cursor)
+
+    def toggle_comment(self):
+        if self.isReadOnly():
+            return
+        language = getattr(self, '_syntax_language', 'python')
+        if language not in {'python', 'javascript', 'typescript', 'tsx', 'java', 'csharp', 'go', 'rust', 'dart'}:
+            return
+        marker = '#' if language == 'python' else '//'
+        cursor = self.textCursor()
+        selected = cursor.hasSelection()
+        first = self.document().findBlock(cursor.selectionStart())
+        last = self.document().findBlock(cursor.selectionEnd())
+        if selected and cursor.selectionEnd() == last.position() and last != first:
+            last = last.previous()
+        rows = []
+        block = first
+        while block.isValid():
+            if block.text().strip():
+                rows.append((block.position(), block.text()))
+            if block == last:
+                break
+            block = block.next()
+        if not rows:
+            return
+        remove = all(line.lstrip().startswith(marker) for _, line in rows)
+        indent = min(len(line) - len(line.lstrip(' \t')) for _, line in rows)
+        tracked = QTextCursor(cursor)
+        edit = QTextCursor(self.document())
+        edit.beginEditBlock()
+        for position, line in reversed(rows):
+            offset = len(line) - len(line.lstrip(' \t')) if remove else indent
+            edit.setPosition(position + offset)
+            if remove:
+                count = len(marker) + int(line[offset + len(marker):].startswith(' '))
+                edit.setPosition(position + offset + count, QTextCursor.MoveMode.KeepAnchor)
+                edit.removeSelectedText()
+            else:
+                edit.insertText(marker + ' ')
+        edit.endEditBlock()
+        self.setTextCursor(tracked)
+
+    def duplicate_text(self):
+        if self.isReadOnly():
+            return
+        cursor = self.textCursor()
+        cursor.beginEditBlock()
+        if cursor.hasSelection():
+            value = cursor.selectedText().replace('\u2029', '\n')
+            cursor.setPosition(cursor.selectionEnd())
+            start = cursor.position()
+            cursor.insertText(value)
+            cursor.setPosition(start, QTextCursor.MoveMode.KeepAnchor)
+        else:
+            value = cursor.block().text()
+            offset = cursor.positionInBlock()
+            cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock)
+            cursor.insertText('\n' + value)
+            cursor.setPosition(cursor.block().position() + offset)
+        cursor.endEditBlock()
+        self.setTextCursor(cursor)
+
+    def change_font_size(self, delta=0, reset=False):
+        # A local stylesheet overrides the window's fixed editor size.
+        size = 14 if reset else max(10, min(24, (self.font().pixelSize() if self.font().pixelSize() > 0 else 14) + delta))
+        self.setStyleSheet(f'QPlainTextEdit {{ font-size: {size}px; }}')
+        self.setTabStopDistance(self.fontMetrics().horizontalAdvance(' ') * self.indent_width)
+        self.update_margin()
+
+    def zoom_in(self): self.change_font_size(1)
+    def zoom_out(self): self.change_font_size(-1)
+    def zoom_reset(self): self.change_font_size(reset=True)
 
     def smart_newline(self):
         from .indentation import code_tail
@@ -372,6 +498,18 @@ class CodeEditor(QPlainTextEdit):
         if event.key() == Qt.Key.Key_Space and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.completionRequested.emit()
             return
+        modifiers = event.modifiers()
+        if event.key() == Qt.Key.Key_Home and not modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier):
+            self.smart_home(bool(modifiers & Qt.KeyboardModifier.ShiftModifier)); return
+        if modifiers == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_Slash:
+            self.toggle_comment(); return
+        if modifiers == (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier) and event.key() == Qt.Key.Key_D:
+            self.duplicate_text(); return
+        if modifiers & Qt.KeyboardModifier.ControlModifier and event.key() in {Qt.Key.Key_Plus, Qt.Key.Key_Equal, Qt.Key.Key_Minus, Qt.Key.Key_0}:
+            if event.key() == Qt.Key.Key_0: self.zoom_reset()
+            elif event.key() == Qt.Key.Key_Minus: self.zoom_out()
+            else: self.zoom_in()
+            return
         if not self.isReadOnly() and event.key() == Qt.Key.Key_Tab and not self.textCursor().hasSelection() and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             self.indent_lines()
             return
@@ -398,6 +536,12 @@ class CodeEditor(QPlainTextEdit):
     def contextMenuEvent(self, event):
         menu = self.createStandardContextMenu()
         if not self.isReadOnly():
+            menu.addSeparator()
+            menu.addAction("Review / revert edits",self.reviewRequested.emit)
+            menu.addAction("Next changed section",self.next_edit)
+            menu.addSeparator()
+            menu.addAction("Toggle line comment   Ctrl+/", self.toggle_comment)
+            menu.addAction("Duplicate line or selection   Ctrl+Shift+D", self.duplicate_text)
             menu.addSeparator()
             menu.addAction("Format document   Alt+Shift+F",self.formatRequested.emit)
             menu.addAction("Go to definition   F12", self.definitionRequested.emit)

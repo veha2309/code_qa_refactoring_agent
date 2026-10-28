@@ -10,7 +10,7 @@ from PySide6.QtGui import QAction, QFont, QFontDatabase, QIcon, QKeySequence, QT
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter,
-    QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QTreeWidget,
+    QStackedWidget, QTabWidget, QToolButton, QMenu, QTableWidget, QTableWidgetItem, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget, QAbstractItemView, QSizePolicy)
 
 from .jobs import Worker
@@ -23,6 +23,7 @@ from .runner import detect_interpreter, run_project_tests
 from .demo import execute_demo
 from .widgets import CodeEditor, DiffViewer, icon
 from .theme import STYLESHEET
+from .file_icons import file_icon, folder_icon
 from .ai_workbench import AIWorkbench
 from .lens import ChangeLens
 from .languages import is_source,is_indexable,language_for,NAMES
@@ -66,7 +67,7 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.check_timer=QTimer(self); self.check_timer.setSingleShot(True); self.check_timer.setInterval(1000); self.check_timer.timeout.connect(self.automatic_check)
         self.preview_timer=QTimer(self); self.preview_timer.setSingleShot(True); self.preview_timer.setInterval(650); self.preview_timer.timeout.connect(self.automatic_preview)
         self.watcher=QFileSystemWatcher(self); self.watcher.fileChanged.connect(self.files_changed); self.watcher.directoryChanged.connect(self.files_changed)
-        self.setWindowTitle("Change Lens"); self.resize(1440,920); self.setMinimumSize(1120,720)
+        self.setWindowTitle("Change Lens"); self.resize(1440,920); self.setMinimumSize(960,640)
         root,outer=column(GlassWorkspace()); outer.setContentsMargins(12,8,12,0);outer.setSpacing(8); self.setCentralWidget(root)
         header=QFrame(); header.setObjectName("topbar"); row=QHBoxLayout(header); row.setContentsMargins(20,12,20,12)
         brand=text("CL","brandMark"); brand.setFixedSize(36,36); brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -87,6 +88,9 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.reindex_button=action("Refresh",self.reindex); self.reindex_button.setObjectName("smallButton"); explorer_tools.addWidget(self.reindex_button); sidebar.addLayout(explorer_tools)
         self.search=QLineEdit(); self.search.setPlaceholderText("Find file or symbol…"); self.search.textChanged.connect(self.filter_tree); sidebar.addWidget(self.search)
         self.explorer=QTreeWidget(); self.explorer.setHeaderHidden(True); self.explorer.setObjectName("explorer"); self.explorer.setIndentation(14)
+        self.explorer.setIconSize(QSize(20,20))
+        self.explorer.itemExpanded.connect(lambda item: self.update_folder_icon(item, True))
+        self.explorer.itemCollapsed.connect(lambda item: self.update_folder_icon(item, False))
         self.explorer.itemClicked.connect(self.explorer_clicked); sidebar.addWidget(self.explorer,1)
         self.repo_summary=text("Open a folder to explore its files.","muted"); sidebar.addWidget(self.repo_summary); body.addWidget(side)
         content,main=column(margins=24)
@@ -104,6 +108,7 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.cancel_button=action("Cancel",self.cancel); self.cancel_button.hide(); line.addWidget(self.cancel_button)
         self.position=text("UTF-8","muted"); line.addWidget(self.position); outer.addWidget(footer)
         self.build_editor(); self.build_changes(); self.build_impact(); self.build_tests(); self.build_refactor(); self.build_diagnostics(); self.build_review(); self.build_ai(); self.build_menu()
+        self.build_architecture()
         self.compact_chrome(sidebar,main,header,heading,headings,brand)
         self.apply_theme(); self.navigate(0); self.refresh_actions()
         self.initialize_ai()
@@ -130,7 +135,7 @@ class MainWindow(AIWorkbench,QMainWindow):
         main.setContentsMargins(8,0,0,0); main.setSpacing(8)
         sidebar.removeWidget(self.nav)
         self.nav.setParent(None); self.nav.setFlow(QListWidget.Flow.LeftToRight); self.nav.setWrapping(False)
-        self.nav.setFixedHeight(42); self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.nav.setFixedHeight(38); self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for index,title in enumerate(["Code","Changes","Impact","Tests","Refactor","Diagnostics"]):
             item=self.nav.item(index); item.setText(title); item.setIcon(QIcon()); item.setSizeHint(QSize(94 if index<5 else 110,34))
         review_item=QListWidgetItem("Review"); review_item.setSizeHint(QSize(94,34)); self.nav.addItem(review_item)
@@ -142,11 +147,15 @@ class MainWindow(AIWorkbench,QMainWindow):
             item=self.nav.item(row_index); page_index=item.data(Qt.ItemDataRole.UserRole)
             if page_index==7:item.setText("Brief")
             elif page_index==0:item.setText("Editor")
-            elif page_index==1:item.setText("Diff")
-            elif page_index==4:item.setText("Fix")
+            elif page_index==1:item.setText("Changes")
+            elif page_index==4:item.setText("Refactor")
             if page_index in {2,5}:item.setHidden(True)
+        lld_item=QListWidgetItem("Architecture");lld_item.setData(Qt.ItemDataRole.UserRole,8);lld_item.setSizeHint(QSize(120,34));self.nav.addItem(lld_item)
+        for nav_index in range(self.nav.count()):
+            item=self.nav.item(nav_index);page_index=item.data(Qt.ItemDataRole.UserRole)
+            if not item.isHidden():item.setSizeHint(QSize({6:74,0:82,1:88,3:72,4:94,7:74,8:116}.get(page_index,94),34))
         self.nav.currentRowChanged.connect(self.navigate_from_nav)
-        main.addWidget(self.nav)
+        main.insertWidget(0,self.nav)
         sidebar.setContentsMargins(10,8,8,8); sidebar.setSpacing(6)
         for item in self.project_panel.findChildren(QLabel):
             if item.text()=="WORKSPACE":item.hide()
@@ -165,32 +174,132 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.quick_button.setObjectName("commandSearch"); self.quick_button.setFixedWidth(280)
         header_row=header.layout()
         while header_row.count():header_row.takeAt(0)
-        identity=text("CHANGE LENS","identity"); header_row.addWidget(identity); header_row.addSpacing(14)
+        identity=text("Change Lens","identity"); header_row.addWidget(identity); header_row.addSpacing(14)
         header_row.addWidget(self.project_name); header_row.addStretch(1)
         files_button=action("Files",self.toggle_project); files_button.setObjectName("smallButton"); header_row.addWidget(files_button)
         header_row.addWidget(self.quick_button); header_row.addStretch(1)
         self.format_button=action("Format",self.format_current);self.format_button.setToolTip("Format document · Alt+Shift+F · review before applying");header_row.addWidget(self.format_button)
-        self.ai_button=action("Brief",self.open_brief); self.ai_button.setObjectName("smallButton"); header_row.addWidget(self.ai_button); header_row.addWidget(self.changes_button)
-        self.changes_button.setText("Follow changes"); self.changes_button.setIcon(QIcon()); self.changes_button.setObjectName("lensAction")
+        self.ai_button=action("Brief",self.open_brief); self.ai_button.setObjectName("smallButton"); self.ai_button.hide(); header_row.addWidget(self.changes_button)
+        self.changes_button.setText("Check changes"); self.changes_button.setIcon(QIcon()); self.changes_button.setObjectName("lensAction")
         self.changes_button.setToolTip("Save edits, choose the comparison automatically and review the results")
         self.breadcrumb=text("","breadcrumb")
-        self.breadcrumb.hide()
+        self.breadcrumb.setText("No file open"); self.breadcrumb.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); self.pages.widget(0).layout().insertWidget(0,self.breadcrumb)
         self.pages.widget(0).layout().setSpacing(0)
         for index in range(1,self.pages.count()):
             self.pages.widget(index).layout().setContentsMargins(14,12,14,10)
         welcome=self.findChild(QFrame,"welcome")
         for item in welcome.findChildren(QLabel):item.hide()
-        self.demo_button.setText("Open sample project")
+        self.demo_button.setText("Try a sample")
         # Keep the empty state restrained: a few discoverable keyboard actions.
         intro=welcome.layout()
         intro.insertWidget(1,text("Change Lens","emptyTitle"))
-        intro.insertWidget(2,text("Open folder                         Ctrl+O\nFind a file                             Ctrl+P\nShow commands                 Ctrl+Shift+P","welcomeText"))
+        intro.insertWidget(2,text("Open a project to edit code and review its changes.\nCtrl+P to find a file · Ctrl+Shift+P for commands","welcomeText"))
         self.install_workbench_commands()
+        self.install_focus_shell(header)
+
+    def install_focus_shell(self,header):
+        self._tools_visible=False;self._files_visible=False;self.shell_header=header
+        header.hide();self.menuBar().hide();self.nav.hide();self.project_panel.hide()
+        for top in self.menuBar().actions():
+            if top.menu():
+                for item in top.menu().actions():
+                    if not item.shortcut().isEmpty():self.addAction(item)
+        strip=QFrame();row=QHBoxLayout(strip);row.setContentsMargins(7,0,7,0);strip.setFixedHeight(32)
+        self.workspace_context=text('Change Lens','muted');self.workspace_context.setWordWrap(False);self.workspace_context.setMaximumWidth(130);row.addWidget(self.workspace_context)
+        self.workspace_buttons={}
+        for index,label in [(6,'Lens'),(0,'Editor'),(1,'Changes'),(3,'Tests'),(4,'Refactor'),(7,'Notes'),(8,'Design')]:
+            button=QToolButton();button.setText(label);button.setCheckable(True);button.setStyleSheet('padding:4px 8px;');button.clicked.connect(lambda checked=False,i=index:self.navigate(i));row.addWidget(button);self.workspace_buttons[index]=button
+        row.addStretch(1)
+        self.common_buttons=[]
+        for label,callback in [('Open',self.open_repository),('Files',self.toggle_project),('Find',self.quick_open)]:
+            button=QToolButton();button.setText(label);button.setStyleSheet('padding:4px 8px;');button.clicked.connect(callback);row.addWidget(button);self.common_buttons.append(button)
+            if label=='Files':button.setCheckable(True)
+        self.quick_actions=QWidget();self.quick_actions_row=QHBoxLayout(self.quick_actions);self.quick_actions_row.setContentsMargins(0,0,0,0);self.quick_actions_row.setSpacing(4);row.addWidget(self.quick_actions)
+        self.options_button=QToolButton();self.options_button.setText('More');self.options_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.options_menu=QMenu(self);self.options_menu.aboutToShow.connect(self.build_options);self.options_button.setMenu(self.options_menu);row.addWidget(self.options_button)
+        self.centralWidget().layout().insertWidget(0,strip)
+        for label,shortcut,direction in [('Next edit','F7',1),('Previous edit','Shift+F7',-1)]:
+            item=QAction(label,self);item.setShortcut(QKeySequence(shortcut));item.triggered.connect(lambda checked=False,d=direction:self.current_editor().next_edit(d) if self.current_editor() else None);self.addAction(item)
+
+    def build_options(self):
+        menu=self.options_menu;menu.clear();go=menu.addMenu('Workspace')
+        for index,title in [(6,'Lens'),(0,'Editor'),(1,'Changes'),(3,'Tests'),(4,'Refactor'),(7,'Code notes'),(8,'Architecture / HLD / LLD')]:
+            item=go.addAction(title);item.setCheckable(True);item.setChecked(self.pages.currentIndex()==index);item.triggered.connect(lambda checked=False,i=index:self.navigate(i))
+        menu.addAction('Open folder…',self.open_repository);menu.addAction('Find file…  Ctrl+P',self.quick_open);menu.addAction('Commands…  Ctrl+Shift+P',self.command_palette);menu.addAction('Local models / context settings',self.show_model_settings)
+        if self.local_ai.last_context_report:menu.addAction('Inspect last model context',lambda:QMessageBox.information(self,'Model context',self.context_note()))
+        menu.addAction('Show / hide files  Ctrl+B',self.toggle_project);menu.addAction('Check changes',self.analyze_changes)
+        if self.pages.currentIndex()==0:
+            menu.addSeparator();menu.addAction('Save  Ctrl+S',self.save_current);menu.addAction('Review / revert edits',self.review_edits);menu.addAction('Format document',self.format_current);menu.addAction('Find in file  Ctrl+F',self.find_in_file);menu.addAction('Next edit  F7',lambda:self.current_editor().next_edit() if self.current_editor() else None);menu.addAction('Previous edit  Shift+F7',lambda:self.current_editor().next_edit(-1) if self.current_editor() else None)
+        if self.pages.currentIndex()==4:
+            refactor=menu.addMenu('Refactor');refactor.addAction('Preview / regenerate',self.preview);apply=refactor.addAction('Apply reviewed patch',self.apply_patch);apply.setEnabled(bool(self.patch) and not self.patch_stale and not self.worker);refactor.addAction('Export patch',self.export_patch)
+        if self.pages.currentIndex()==3:menu.addAction('Run selected tests',self.validate_demo)
+        if self.pages.currentIndex()==6:
+            lens=menu.addMenu('Lens');lens.addAction('Find component',lambda:self.lens_view.search.setFocus());lens.addAction('Readable trace map',lambda:self.lens_view.mode.setCurrentIndex(0));lens.addAction('Dependency layers',lambda:self.lens_view.mode.setCurrentIndex(1));lens.addAction('3D explorer',lambda:self.lens_view.mode.setCurrentIndex(2));lens.addAction('Fit map',self.lens_view.fit_map);lens.addAction('Run linked tests',self.check_and_run);lens.addAction('Evidence table',lambda:self.navigate(2))
+        if self.pages.currentIndex()==8:
+            view=self.architecture_view;canvas=view.active_canvas();design=menu.addMenu('Design')
+            design.addAction('Review source project',self.generate_architecture);design.addAction('Export source report',self.export_architecture)
+            design.addAction('System & feature flows',lambda:view.tabs.setCurrentWidget(view.flows));design.addAction('Package dependencies',lambda:(view.tabs.setCurrentIndex(3),view.diagram_choice.setCurrentIndex(0)));design.addAction('Declarations & members',lambda:(view.tabs.setCurrentIndex(3),view.diagram_choice.setCurrentIndex(1)))
+            scopes=design.addMenu('Package')
+            for i in range(view.scope.count()):scopes.addAction(view.scope.itemText(i),lambda checked=False,n=i:view.scope.setCurrentIndex(n))
+            pages=design.addMenu('Page')
+            for i in range(view.diagram_page.count()):pages.addAction(view.diagram_page.itemText(i),lambda checked=False,n=i:view.diagram_page.setCurrentIndex(n))
+            for label,cb in [('Add card',lambda:canvas.add_node('class' if canvas.model and canvas.model['level']=='LLD' else 'package')),('Add note',lambda:canvas.add_node('note')),('Undo',canvas.history.undo),('Redo',canvas.history.redo),('Delete selected',canvas.delete_selected),('Reset page to source (undoable)',view.reset_active_design),('Show / hide inspector',lambda:canvas.inspector.setVisible(canvas.inspector.isHidden())),('Fit design',canvas.fit),('Save editable design',canvas.save_design),('Load editable design',canvas.load_design),('Export edited SVG',canvas.export_svg)]:design.addAction(label,cb)
+            sections=design.addMenu('Review views')
+            for i,label in enumerate(['Review queue','Code inventory','Dependencies','Code structure','System & feature flows','Analysis coverage']):sections.addAction(label,lambda checked=False,n=i:view.tabs.setCurrentIndex(n))
+        if self.pages.currentIndex()==7:
+            notes=menu.addMenu('Code notes');notes.addAction('Explain focused code',self.explain_code);notes.addAction('Suggest a change',self.suggest_rewrite);notes.addAction('Model / context settings',lambda:self.ai_settings.setVisible(self.ai_settings.isHidden()))
+        menu.addSeparator();tools=menu.addAction('Advanced controls');tools.setCheckable(True);tools.setChecked(self._tools_visible);tools.toggled.connect(self.set_page_tools)
+        for top in self.menuBar().actions():
+            if top.menu():menu.addMenu(top.menu())
+
+    def show_model_settings(self):
+        self.navigate(7);self.ai_settings.show()
+
+    def set_page_tools(self,show):
+        self._tools_visible=show;self.lens_view.set_tools_visible(show);self.architecture_view.set_tools_visible(show)
+        self.lens_view.summary.show();self.lens_view.legend.show()
+        self.review_context.setVisible(show);self.breadcrumb.setVisible(show)
+        for page_index in (1,2,3,4,5):
+            for child in self.pages.widget(page_index).findChildren(QWidget,options=Qt.FindChildOption.FindDirectChildrenOnly):
+                if isinstance(child,(QPushButton,QLineEdit,QComboBox,QSpinBox,QCheckBox)):child.show()
+        advanced=show or self.comparison_advanced.isChecked()
+        self.comparison.setVisible(advanced);self.baseline_button.setVisible(advanced);self.train_button.setVisible(show)
+        generated=self.operation.currentData()=='ai_rewrite';self.old_name.setVisible(not generated);self.new_name.setVisible(not generated)
+        self.ai_heading.hide();self.ai_context_label.show();self.ai_settings_toggle.setVisible(show)
+        self.ai_explain.show();self.ai_rewrite.show()
+        for child in self.pages.widget(6).findChildren(QPushButton,options=Qt.FindChildOption.FindDirectChildrenOnly):child.show()
+        self.review_issue.setVisible(bool(self.snapshot and any(w.startswith(('Cannot parse','Skipped')) for w in self.snapshot.warnings)))
+
+    def populate_quick_actions(self,index):
+        if not hasattr(self,'quick_actions'):return
+        if getattr(self,'_quick_page',None)==index:return
+        self._quick_page=index
+        while self.quick_actions_row.count():
+            item=self.quick_actions_row.takeAt(0)
+            if item.widget():item.widget().hide();item.widget().deleteLater()
+        actions={0:[('Save',self.save_current),('Review edits',self.review_edits)],
+                 1:[('Check',self.analyze_changes)],2:[('Check',self.analyze_changes)],3:[('Run tests',self.validate_demo)],
+                 4:[('Preview',self.preview),('Apply',self.apply_patch)],5:[],6:[('Check',self.analyze_changes),('Fit',self.lens_view.fit_map)],
+                 7:[('Models',self.show_model_settings)],8:[('Review',self.generate_architecture),('Export',self.export_architecture)]}
+        self.page_action_buttons={}
+        for label,callback in actions.get(index,[]):
+            button=QToolButton();button.setText(label);button.setStyleSheet('padding:4px 8px;');button.clicked.connect(callback);self.quick_actions_row.addWidget(button);button.show();self.page_action_buttons[label]=button
+
+
+    def update_shell(self):
+        if not hasattr(self,'workspace_context'):return
+        names=['Editor','Changes','Evidence','Tests','Refactor','Diagnostics','Lens','Code notes','Architecture']
+        name=Path(self.snapshot.root).name if self.snapshot else 'Change Lens';doc=self.current_document()
+        detail=doc.path.relative_to(self.snapshot.root).as_posix() if doc and self.snapshot and self.pages.currentIndex()==0 else names[self.pages.currentIndex()]
+        self.workspace_context.setText(name);self.workspace_context.setToolTip(name+' / '+detail)
+        for page,button in self.workspace_buttons.items():button.setChecked(page==self.pages.currentIndex())
+        self.populate_quick_actions(self.pages.currentIndex());self.update_quick_action_state()
+        self.shell_header.hide();self.nav.hide();self.set_page_tools(self._tools_visible)
 
     def install_workbench_commands(self):
         self.commands=[("Project: Open folder",self.open_repository),("Project: Open sample",self.open_sample),("Project: Open web sample",self.open_web_sample),("Project: Open Flutter sample",self.open_flutter_sample),
             ("Project: Refresh index",self.reindex),("Project: Capture baseline",self.capture_baseline),
-            ("Editor: Save",self.save_current),("Editor: Find in file",self.find_in_file),("Search: Find in project",self.search_project),("Editor: Format document",self.format_current),
+            ("Editor: Review / revert edits",self.review_edits),("Editor: Save",self.save_current),("Editor: Find in file",self.find_in_file),("Search: Find in project",self.search_project),("Editor: Format document",self.format_current),
             ("Analysis: Analyze changes",self.analyze_changes),("Analysis: Analyze symbol under cursor",self.analyze_selected),
             ("Refactor: Preview rename",self.prepare_rename),("View: Toggle project panel",self.toggle_project),
             ("View: Toggle outline",self.toggle_outline)]
@@ -210,13 +319,14 @@ class MainWindow(AIWorkbench,QMainWindow):
                 ("Toggle project panel","Ctrl+B",self.toggle_project),("Toggle outline","Ctrl+Shift+O",self.toggle_outline),
                 ("Return to code","Ctrl+1",lambda:self.navigate(0))]:
             item=QAction(title,self); item.setShortcut(QKeySequence(shortcut)); item.triggered.connect(callback); menu.addAction(item)
-        for index,title in enumerate(["Editor","Diff","Evidence table","Tests","Fix","Diagnostics","Lens","Brief"]):
+        for index,title in enumerate(["Editor","Changes","Evidence table","Tests","Refactor","Diagnostics","Lens","Brief","Architecture"]):
             callback=lambda checked=False,i=index:self.navigate(i)
             item=QAction(title,self); item.triggered.connect(callback); menu.addAction(item)
             self.commands.append(("View: "+title,callback))
 
     def toggle_project(self):
-        self.project_panel.setVisible(self.project_panel.isHidden())
+        self._files_visible=not self._files_visible;self.project_panel.setVisible(self._files_visible)
+        if hasattr(self,'common_buttons'):self.common_buttons[1].setChecked(self._files_visible)
 
     def navigate_from_nav(self,row):
         if row>=0:self.navigate(self.nav.item(row).data(Qt.ItemDataRole.UserRole))
@@ -263,13 +373,13 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.editor_tabs.currentChanged.connect(self.editor_changed); self.editor_tabs.tabCloseRequested.connect(self.close_document); col.addWidget(self.editor_tabs,1)
         self.editor_stack.addWidget(panel); split.addWidget(self.editor_stack)
         detail,inspector=column(QFrame(),16); detail.setObjectName("inspector"); detail.setMinimumWidth(215); detail.setMaximumWidth(300)
-        inspector.addWidget(text("CODE INTELLIGENCE","eyebrow")); inspector.addWidget(text("Understand this symbol","sectionTitle"))
+        inspector.addWidget(text("OUTLINE","eyebrow")); inspector.addWidget(text("Understand this symbol","sectionTitle"))
         self.symbols=QComboBox(); self.symbols.setMinimumContentsLength(12); self.symbols.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.symbols.activated.connect(lambda:self.select_symbol(self.symbols.currentData())); inspector.addWidget(self.symbols)
         self.selected_button=action("Analyze symbol",self.analyze_selected,True,"impact"); inspector.addWidget(self.selected_button)
         self.symbol_info=text("Choose a function or class in the explorer.","muted"); inspector.addWidget(self.symbol_info); inspector.addSpacing(14)
-        inspector.addWidget(text("REFACTORING IDEAS","eyebrow")); self.ideas=QListWidget(); self.ideas.setWordWrap(True); self.ideas.itemClicked.connect(self.idea_clicked); inspector.addWidget(self.ideas,1)
-        inspector.addWidget(text("LOCAL COMPLETION","eyebrow")); inspector.addWidget(text("Ctrl+Space suggests names, attributes and imports. Enter or Tab accepts a suggestion.","muted"))
+        inspector.addWidget(text("Suggestions","eyebrow")); self.ideas=QListWidget(); self.ideas.setWordWrap(True); self.ideas.itemClicked.connect(self.idea_clicked); inspector.addWidget(self.ideas,1)
+        inspector.addWidget(text("Completion","eyebrow")); inspector.addWidget(text("Ctrl+Space suggests names, attributes and imports. Enter or Tab accepts a suggestion.","muted"))
         inspector.addSpacing(10); inspector.addWidget(text("SHORTCUTS","eyebrow")); inspector.addWidget(text("Ctrl+S  Save\nCtrl+F  Find in file\nF2  Preview rename","muted"))
         split.addWidget(detail); split.setSizes([800,260]); split.setStretchFactor(0,1); layout.addWidget(split); self.pages.addWidget(page)
 
@@ -383,6 +493,7 @@ class MainWindow(AIWorkbench,QMainWindow):
         issues=sum(warning.startswith(("Cannot parse","Skipped")) for warning in report["warnings"])
         self.review_issue.setVisible(bool(issues)); self.review_issue.setText(f"{issues} source issues need attention — inspect diagnostics")
         self.lens_view.set_report(self.snapshot,report)
+        if hasattr(self,"_tools_visible"):self.set_page_tools(self._tools_visible)
         linked=bool(self.lens_view.linked_tests)
         self.review_tests.setEnabled(bool(summary["recommended_tests"]) or linked)
 
@@ -414,6 +525,8 @@ class MainWindow(AIWorkbench,QMainWindow):
             menu=self.menuBar().addMenu(menu_name)
             for title,shortcut,callback in items:
                 item=QAction(title,self); item.setShortcut(QKeySequence(shortcut)); item.triggered.connect(callback); menu.addAction(item)
+        for label, method in [('Toggle line comment   Ctrl+/', 'toggle_comment'), ('Duplicate line or selection   Ctrl+Shift+D', 'duplicate_text'), ('Increase editor font   Ctrl++', 'zoom_in'), ('Decrease editor font   Ctrl+-', 'zoom_out'), ('Reset editor font   Ctrl+0', 'zoom_reset')]:
+            item=QAction(label,self);item.triggered.connect(lambda checked=False,m=method: getattr(self.current_editor(),m)() if self.current_editor() else None);menu.addAction(item)
         for title,shortcut,callback in [('Search project','Ctrl+Shift+F',lambda:self.search_project()),('Next match','F3',self.find_next),('Previous match','Shift+F3',lambda:self.find_panel.step(-1))]:
             item=QAction(title,self);item.setShortcut(QKeySequence(shortcut));item.triggered.connect(callback);menu.addAction(item)
 
@@ -424,20 +537,24 @@ class MainWindow(AIWorkbench,QMainWindow):
 
     def navigate(self,index):
         if not hasattr(self,"pages") or index<0:return
+        if self.pages.currentIndex()!=index and hasattr(self,"_tools_visible"):self._tools_visible=False
         self.pages.setCurrentIndex(index)
-        self.position.setVisible(index not in {6,7})
+        self.position.setVisible(index not in {6,7,8})
         if hasattr(self,"project_panel"):
-            if index in {6,7}:self.project_panel.hide()
-            elif index==0:self.project_panel.setVisible(self.snapshot is not None)
+            if index in {6,7,8}:self.project_panel.hide()
+            elif index==0:self.project_panel.setVisible(self.snapshot is not None and getattr(self,"_files_visible",False))
         self.nav.blockSignals(True)
         for nav_index in range(self.nav.count()):
             if self.nav.item(nav_index).data(Qt.ItemDataRole.UserRole)==index:self.nav.setCurrentRow(nav_index); break
         self.nav.blockSignals(False)
         self.nav.glide_to_current()
-        titles=[("Editor","Write and explore with offline Python intelligence."),("Change review","Read old and new code side by side."),("Impact analysis","Follow evidence from changed code to potential callers."),("Test runner","Choose relevant tests and inspect actual results."),("Refactoring","Preview structural changes across your project."),("Diagnostics","Inspect analysis limits and model status."),("Review","Your project check and next steps."),("Assistant","Local coding models.")]
+        titles=[("Editor","Write and explore with offline Python intelligence."),("Change review","Read old and new code side by side."),("Impact analysis","Follow evidence from changed code to potential callers."),("Test runner","Choose relevant tests and inspect actual results."),("Refactoring","Preview structural changes across your project."),("Diagnostics","Inspect analysis limits and model status."),("Review","Your project check and next steps."),("Assistant","Local coding models."),("Architecture","Static architecture review and implementation LLD.")]
         self.title.setText(titles[index][0]); self.subtitle.setText(titles[index][1])
         if index==4:self.update_refactor_context()
+        if index==8 and self.snapshot and (not self.architecture_view.report or self.architecture_view.report["snapshot_id"]!=self.snapshot.id):
+            QTimer.singleShot(0,self.generate_architecture)
         if hasattr(self,'format_button'):self.format_button.setVisible(index==0 and self.current_document() is not None)
+        self.update_shell()
 
     def notify(self,message,error=False):
         self.status.setText(message.splitlines()[0][:180]); self.banner.setText(message); self.banner.setVisible(error)
@@ -458,12 +575,32 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.patch_button.setEnabled(self.patch is not None and not self.patch_stale and not busy); self.apply_button.setEnabled(self.patch is not None and not self.patch_stale and not busy); self.export_button.setEnabled(self.report is not None and not busy)
         executable=execution_family(self.snapshot,self.checked_tests())
         self.validate_button.setEnabled(bool(executable) and not self.report_stale and not busy); self.train_button.setEnabled(not busy)
+        if hasattr(self,'architecture_view'):
+            self.architecture_view.generate.setEnabled(opened and not busy)
+            self.architecture_view.export.setEnabled(opened and bool(self.architecture_view.report) and not busy)
         self.validate_button.setToolTip("Runs selected Python tests, JS/TS files/filters, or Flutter test files with prepared SDK/dependencies. Repository trust is required.")
         self.mutate_button.setVisible(opened and Path(self.snapshot.root)==(resources()/"demo").resolve()); self.mutate_button.setEnabled(self.report is not None and not self.report_stale and not busy)
+        self.update_quick_action_state()
         if hasattr(self,"review_tests"):
             linked=bool(self.report and self.lens_view.linked_tests)
             self.review_tests.setEnabled(bool(self.report and linked and execution_family(self.snapshot,list(self.lens_view.linked_tests))) and not busy)
             self.review_tests.setToolTip("Python, JS/TS and prepared Flutter test execution. Other languages currently provide structural recommendations.")
+
+    def update_quick_action_state(self):
+        if not hasattr(self,'page_action_buttons'):return
+        busy=self.worker is not None;opened=self.snapshot is not None
+        if hasattr(self,'common_buttons'):
+            self.common_buttons[0].setEnabled(not busy);self.common_buttons[1].setEnabled(opened);self.common_buttons[1].setChecked(self.project_panel.isVisible());self.common_buttons[2].setEnabled(opened)
+        for label,button in self.page_action_buttons.items():
+            enabled=not busy
+            if label in {'Check','Review','Run tests'}:enabled=enabled and opened
+            if label in {'Save','Review edits'}:enabled=enabled and self.current_document() is not None
+            if label=='Apply':enabled=enabled and bool(self.patch) and not self.patch_stale
+            if label=='Export':enabled=enabled and bool(self.architecture_view.report)
+            if label=='Preview':enabled=enabled and self.current_document() is not None and not self.ai_worker
+            if label=='Run tests':enabled=enabled and self.validate_button.isEnabled()
+            if label=='Save':enabled=enabled and self.current_editor() is not None and not self.current_editor().isReadOnly()
+            button.setEnabled(enabled)
 
     def update_result_state(self):
         if self.report and self.report["snapshot"] != self.snapshot.id:self.report_stale=True
@@ -474,6 +611,8 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.refresh_actions()
 
     def invalidate_results(self):
+        if hasattr(self,'architecture_view') and self.architecture_view.report:
+            self.architecture_view.status.setText('Editor changed since review. The report covers saved source only; save and review again for the current design.')
         self.report_stale=bool(self.report); self.patch_stale=bool(self.patch)
         self.update_result_state()
 
@@ -566,6 +705,10 @@ class MainWindow(AIWorkbench,QMainWindow):
 
     def automatic_check(self):
         if not self.snapshot:return
+        if self.ai_worker is not None:
+            self.pending_check=True;self.check_timer.start();return
+        if self.patch is not None and not self.patch_stale:
+            self.pending_check=False;return
         if self.worker is not None or any(editor.document().isModified() for editor in self.documents):
             self.pending_check=True; return
         self.pending_check=False
@@ -596,6 +739,7 @@ class MainWindow(AIWorkbench,QMainWindow):
 
     def indexed(self,snapshot,preserve=False):
         if not preserve:
+            self.architecture_view.clear_report()
             self.editor_tabs.blockSignals(True); self.editor_tabs.clear(); self.documents.clear(); self.editors.clear(); self.editor_tabs.blockSignals(False)
         self.snapshot=snapshot; self.report=self.patch=None; self.project_name.setText(Path(snapshot.root).name); self.project_name.setToolTip(snapshot.root)
         self.report_stale=self.patch_stale=False; self.test_choices.clear(); self.result_state.hide()
@@ -650,9 +794,9 @@ class MainWindow(AIWorkbench,QMainWindow):
             parent=""
             for part in Path(path).parts[:-1]:
                 name=(parent+"/"+part).strip("/")
-                if name not in folders:folders[name]=QTreeWidgetItem(folders[parent],[part]); folders[name].setIcon(0,icon("folder"))
+                if name not in folders:folders[name]=QTreeWidgetItem(folders[parent],[part]); folders[name].setIcon(0,folder_icon(part))
                 parent=name
-            item=QTreeWidgetItem(folders[parent],[Path(path).name]); item.setIcon(0,icon("code" if is_source(path) else "file")); item.setData(0,Qt.ItemDataRole.UserRole,{"path":path}); item.setToolTip(0,path)
+            item=QTreeWidgetItem(folders[parent],[Path(path).name]); item.setIcon(0,file_icon(path)); item.setData(0,Qt.ItemDataRole.UserRole,{"path":path}); item.setToolTip(0,path)
             for symbol in sorted(grouped.get(path,[]),key=lambda s:s.start):
                 if "." in symbol.qualname:continue
                 child=QTreeWidgetItem(item,[symbol.name+("()" if symbol.kind!="class" else "")]); child.setIcon(0,icon("test" if symbol.is_test else "code","#a6abb3")); child.setData(0,Qt.ItemDataRole.UserRole,{"path":path,"symbol":symbol.id})
@@ -664,6 +808,10 @@ class MainWindow(AIWorkbench,QMainWindow):
             if value==selected:self.explorer.setCurrentItem(item)
             iterator+=1
         if old_root==self.snapshot.root:self.explorer.verticalScrollBar().setValue(scroll)
+
+    def update_folder_icon(self, item, expanded):
+        if not item.data(0,Qt.ItemDataRole.UserRole):
+            item.setIcon(0,folder_icon(item.text(0),expanded))
 
     def filter_tree(self,query):
         needle=query.casefold()
@@ -696,7 +844,7 @@ class MainWindow(AIWorkbench,QMainWindow):
             template=Path(self.snapshot.root)==(resources()/"demo").resolve()
             editor=CodeEditor(readonly=template); editor.set_code(document.text)
             editor.set_language(target)
-            self.documents[editor]=document; self.editors[path]=editor; self.editor_tabs.addTab(editor,icon("code"),target.name)
+            self.documents[editor]=document; self.editors[path]=editor; self.editor_tabs.addTab(editor,file_icon(target),target.name)
             editor.document().modificationChanged.connect(lambda modified,e=editor:self.mark_modified(e,modified)); editor.saveRequested.connect(self.save_current)
             editor.completionRequested.connect(self.request_completion); editor.positionChanged.connect(self.position.setText); editor.cursorPositionChanged.connect(self.cursor_symbol)
             editor.automaticCompletionRequested.connect(lambda:self.request_completion(True))
@@ -704,9 +852,18 @@ class MainWindow(AIWorkbench,QMainWindow):
             editor.refactorRequested.connect(self.prepare_refactor)
             editor.definitionRequested.connect(self.go_to_definition)
             editor.formatRequested.connect(self.format_current)
-        self.editor_tabs.setCurrentWidget(editor); self.editor_stack.setCurrentIndex(1)
+            editor.reviewRequested.connect(self.review_edits)
+        self.set_editor_comparison(editor,path)
+        self.editor_tabs.setTabToolTip(self.editor_tabs.indexOf(editor),str(target)); self.editor_tabs.setCurrentWidget(editor); self.editor_stack.setCurrentIndex(1)
         if line:editor.goto_line(line)
         editor.setFocus(); self.cursor_symbol(); self.refresh_actions()
+
+    def set_editor_comparison(self,editor,path):
+        if not self.report or self.report.get('comparison')=='symbol':return
+        record=next((r for r in self.report['changes']['files'] if r['path']==path),None)
+        editor.change_base_text=(record['before'] if record and record.get('before') is not None else self.documents[editor].text).replace('\r\n','\n')
+        editor.change_base_label=self.report.get('comparison_context',{}).get('label','project comparison')
+        editor.update_edit_marks()
 
     def mark_modified(self,editor,modified):
         document=self.documents.get(editor)
@@ -717,9 +874,9 @@ class MainWindow(AIWorkbench,QMainWindow):
         if hasattr(self,'find_panel') and self.find_panel.isVisible():self.find_panel.refresh()
         if hasattr(self,"breadcrumb"):
             editor=self.editor_tabs.widget(index); doc=self.documents.get(editor)
-            self.breadcrumb.setText(str(doc.path.relative_to(Path(self.snapshot.root))).replace("\\","  /  ") if doc and self.snapshot else "")
+            self.breadcrumb.setText(str(doc.path.relative_to(Path(self.snapshot.root))).replace("\\","  /  ") if doc and self.snapshot else "No file open")
         if not self.editor_tabs.count():self.editor_stack.setCurrentIndex(0)
-        self.cursor_symbol(); self.refresh_actions()
+        self.cursor_symbol(); self.refresh_actions();self.update_shell()
 
     def close_document(self,index):
         editor=self.editor_tabs.widget(index); document=self.documents[editor]
@@ -735,14 +892,22 @@ class MainWindow(AIWorkbench,QMainWindow):
             if editor.document().isModified() and not editor.isReadOnly():
                 if editor.toPlainText()!=self.documents[editor].text:self.documents[editor].save(editor.toPlainText())
                 editor.document().setModified(False)
+                if getattr(self.documents[editor],"history_warning",""):self.notify(self.documents[editor].history_warning,True)
             return True
         except (OSError,ValueError,UnicodeError) as exc:self.notify(str(exc),True);return False
 
     def save_current(self):
+        if self.pages.currentIndex()==8:
+            self.architecture_view.active_canvas().save_design();return
         editor=self.current_editor()
         if editor and self.save_editor(editor):
-            self.notify("Saved — project checks update automatically.")
+            self.notify("Saved. Checking changes…")
             self.pending_check=True; self.check_timer.start()
+
+    def review_edits(self):
+        if not self.current_document():return
+        from .edit_review import EditReview
+        self.edit_review=EditReview(self);self.edit_review.show()
 
     def format_current(self):
         if self.worker:return
@@ -867,10 +1032,13 @@ class MainWindow(AIWorkbench,QMainWindow):
     @atomic_paint
     def analyzed(self,result,show_review=True):
         self.snapshot,self.report=result; self.patch=None; report=self.report
+        if self.architecture_view.report and self.architecture_view.report['snapshot_id']!=self.snapshot.id:
+            self.architecture_view.status.setText('Project changed since architecture review. Choose Review project to refresh the design.')
         if not show_review:self.reload_clean_documents()
         self.report_stale=any(editor.document().isModified() and is_indexable(document.path) for editor,document in self.documents.items())
         self.patch_stale=False; self.test_choices.clear(); self.update_result_state()
         self.populate_symbols(); self.populate_explorer(); self.populate_diagnostics(); self.populate_tests()
+        for editor,document in self.documents.items():self.set_editor_comparison(editor,document.path.relative_to(self.snapshot.root).as_posix())
         for key,widget in self.metrics.items():widget.setText(f"{report['summary'][key]:.2f}s" if key=="seconds" else str(report["summary"][key]))
         self.impact_summary.setText(f"{report['summary']['affected_symbols']} potentially affected symbols. Select a relationship to inspect its source and reasoning.")
         self.impact_view.clear(); nodes={}
@@ -885,7 +1053,7 @@ class MainWindow(AIWorkbench,QMainWindow):
         if self.impact_view.topLevelItemCount():self.impact_clicked(self.impact_view.topLevelItem(0),0)
         self.change_rows=report["changes"]["files"]; self.change_list.clear()
         for row in self.change_rows:
-            item=QListWidgetItem(icon("file"),Path(row["path"]).name+"\n"+row["status"]); item.setToolTip(row["path"]); self.change_list.addItem(item)
+            item=QListWidgetItem(file_icon(row["path"]),Path(row["path"]).name+"\n"+row["status"]); item.setToolTip(row["path"]); self.change_list.addItem(item)
         self.change_summary.setText(f"{len(self.change_rows)} changed source/configuration files · Compared with {report['comparison']} · Saved edits included")
         if self.change_rows:self.change_list.setCurrentRow(0)
         else:self.changes_view.clear()
@@ -1009,7 +1177,7 @@ class MainWindow(AIWorkbench,QMainWindow):
         if self.current_document() and language_for(self.current_document().path)!="python":self.notify("Reviewed rename/extract currently supports Python only. Use the Brief for explanations of this language.",True); return
         if self.current_editor():
             self.patch=None; self.patch_list.clear(); self.diff_view.clear(); self.new_name.clear()
-            self.operation.setCurrentIndex(0); self.update_refactor_context(); self.navigate(4); self.new_name.setFocus(); self.update_result_state()
+            self.operation.setCurrentIndex(0); self.update_refactor_context(); self.navigate(4); self.set_page_tools(True); self.new_name.setFocus(); self.update_result_state()
 
     def refactor_mode_changed(self,*args):
         generated=self.operation.currentData()=="ai_rewrite"
@@ -1020,7 +1188,7 @@ class MainWindow(AIWorkbench,QMainWindow):
     def prepare_refactor(self,operation):
         if self.current_document() and language_for(self.current_document().path)!="python":self.notify("Reviewed rename/extract currently supports Python only.",True); return
         self.patch=None; self.patch_list.clear(); self.diff_view.clear()
-        self.operation.setCurrentIndex(self.operation.findData(operation)); self.update_refactor_context(); self.navigate(4); self.new_name.setFocus()
+        self.operation.setCurrentIndex(self.operation.findData(operation)); self.update_refactor_context(); self.navigate(4); self.set_page_tools(True); self.new_name.setFocus()
         if operation in {"extract_method","extract_variable"} and self.current_editor():
             import re
             names=set(re.findall(r"\w+",self.current_editor().toPlainText()))
@@ -1052,7 +1220,7 @@ class MainWindow(AIWorkbench,QMainWindow):
             any(editor.document().isModified() and is_indexable(document.path) for editor,document in self.documents.items()))
         if self.patch_stale:self.preview_timer.start()
         self.update_result_state()
-        for row in self.patch["files"]:self.patch_list.addItem(QListWidgetItem(icon("file"),row["path"]))
+        for row in self.patch["files"]:self.patch_list.addItem(QListWidgetItem(file_icon(row["path"]),row["path"]))
         self.patch_list.setCurrentRow(0); self.navigate(4); self.notify(f"Preview ready · {len(self.patch['files'])} files · syntax passed · tests not run. Original files unchanged.")
         if self.patch["operation"]=="ai_rewrite":self.refactor_context.setText(self.patch.get("explanation","")+"\nGenerated locally · syntax checked · behavior not proven · tests not run")
 
@@ -1062,6 +1230,7 @@ class MainWindow(AIWorkbench,QMainWindow):
 
     def apply_patch(self):
         if not self.patch or not self.save_all():return
+        self.check_timer.stop();self.preview_timer.stop();self.pending_check=False
         if self.patch["new"]!=self.new_name.text().strip() or self.patch["operation"]!=self.operation.currentData():
             self.notify("Wait for the updated preview before applying this refactoring.",True); return
         if Path(self.snapshot.root)==(resources()/"demo").resolve():
@@ -1085,10 +1254,15 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.cancel_button.hide()
 
     def populate_diagnostics(self):
+        from .review_quality import diagnostic_digest
         rows=self.report["warnings"] if self.report else self.snapshot.warnings if self.snapshot else []
         self.diagnostics.clear(); query=self.diagnostic_search.text().casefold()
-        self.diagnostics.addItems([row for row in rows if query in row.casefold()]); count=sum(row.startswith(("Cannot parse","Skipped")) for row in rows)
-        self.diagnostic_summary.setText(f"{count} file issues · {len(rows)-count} unresolved or conservative relationships. These are analysis limits, not confirmed defects.")
+        cache=getattr(self,'_diagnostic_digest_cache',None)
+        if not cache or cache[0] is not rows or cache[1]!=len(rows):self._diagnostic_digest_cache=(rows,len(rows),diagnostic_digest(rows))
+        digest=diagnostic_digest([row for row in rows if query in row.casefold()]) if query else self._diagnostic_digest_cache[2]
+        self.diagnostics.addItems([f"{g['category']} · {g['title']} · {g['count']} occurrences / {g['file_count']} files\n"+(g['examples'][0]['message'] if g['examples'] else '') for g in digest['groups'][:300]])
+        counts=digest['counts'];count=counts.get('parser exclusions',0)+counts.get('skipped files',0)
+        self.diagnostic_summary.setText(f"{count} file exclusions · {digest['raw_occurrences']} diagnostic occurrences grouped into {len(digest['groups'])} entries · first 300 groups shown. Unresolved references describe analysis coverage, not code-error counts.")
         if self.snapshot:
             profile=self.snapshot.profile
             for language,cap in profile.get("capabilities",{}).items():
@@ -1097,6 +1271,46 @@ class MainWindow(AIWorkbench,QMainWindow):
             for framework in profile.get("frameworks",[]):
                 value=f"Framework hint: {framework['name']} · {framework['path']} · {framework['evidence']} · {framework['note']}"
                 if query in value.casefold():self.diagnostics.addItem(value)
+
+    def build_architecture(self):
+        from .architecture_ui import ArchitectureView
+        self.architecture_view=ArchitectureView()
+        self.architecture_view.generateRequested.connect(self.generate_architecture)
+        self.architecture_view.exportRequested.connect(self.export_architecture)
+        self.architecture_view.codeRequested.connect(self.open_architecture_code)
+        self.pages.addWidget(self.architecture_view)
+
+    def open_architecture_code(self,path,line):
+        self.open_file(path,line);self.navigate(0)
+
+    def generate_architecture(self):
+        if not self.snapshot or self.worker:return
+        from .architecture import review_architecture
+        root=Path(self.snapshot.root)
+        unsaved=any(editor.document().isModified() for editor in self.documents)
+        self.architecture_view.status.setText('Reviewing saved source…'+(' Unsaved editor changes are excluded.' if unsaved else ''))
+        def task(cancel,progress):
+            snapshot=index_repository(root,cancel,progress)
+            return snapshot,review_architecture(snapshot,cancel,progress)
+        def ready(result):
+            architecture_snapshot,report=result
+            if not self.snapshot or Path(self.snapshot.root)!=root:return
+            self.architecture_snapshot=architecture_snapshot
+            self.architecture_view.set_report(report)
+            if unsaved:self.architecture_view.status.setText(self.architecture_view.status.text()+' · Unsaved buffers were excluded')
+            self.notify('Architecture review ready. Double-click a declaration or dependency to open its source.')
+        self.start(task,ready)
+
+    def export_architecture(self):
+        view=self.architecture_view
+        if not self.snapshot or not view.report or self.worker:return
+        from .architecture import export_bundle
+        if any(editor.document().isModified() for editor in self.documents):
+            self.notify('Save or discard editor changes, then review the project before exporting its current design.',True);return
+        folder=QFileDialog.getExistingDirectory(self,'Export architecture report and diagrams',str(app_dir()))
+        if not folder:return
+        report=view.report;snapshot=self.architecture_snapshot
+        self.start(lambda cancel,progress:export_bundle(report,snapshot,folder,cancel),lambda path:self.notify('Architecture bundle exported to '+str(path)))
 
     def train(self):
         def done(model):self.validation_view.setPlainText("Model retrained.\ntraining_pairs: "+str(model["training_pairs"])); self.notify("Experimental test ranker retrained from synthetic examples.")

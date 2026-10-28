@@ -24,5 +24,13 @@ if __name__ == "__main__":
         from pathlib import Path
         from changelens.refinement_smoke import run
         raise SystemExit(run(Path(sys.argv[2])))
+    if len(sys.argv)>2 and sys.argv[1]=='--self-test-architecture':
+        from pathlib import Path
+        from changelens.architecture_smoke import run
+        raise SystemExit(run(Path(sys.argv[2])))
+    if len(sys.argv)>2 and sys.argv[1]=='--self-test-focus':
+        from pathlib import Path
+        from changelens.focus_smoke import run
+        raise SystemExit(run(Path(sys.argv[2])))
     from changelens.workbench import main
     main()

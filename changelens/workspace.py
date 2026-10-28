@@ -31,6 +31,12 @@ class Document:
         if not self.path.exists() or hashlib.sha256(self.path.read_bytes()).hexdigest() != self.digest:
             raise ValueError("This file changed outside the editor. Reopen it before saving to avoid overwriting those changes.")
         raw = text.replace("\n", self.newline).encode(self.encoding)
+        self.save_raw(raw)
+
+    def save_raw(self,raw,origin="save"):
+        if not self.path.exists() or hashlib.sha256(self.path.read_bytes()).hexdigest()!=self.digest:
+            raise ValueError("This file changed outside the editor. Reopen it before saving.")
+        previous=self.raw
         previous_mode = self.path.stat().st_mode
         fd, name = tempfile.mkstemp(prefix=".changelens-", dir=self.path.parent)
         try:
@@ -43,8 +49,13 @@ class Document:
         finally:
             if os.path.exists(name):
                 os.unlink(name)
-        self.raw, self.text = raw, text
-        self.digest = hashlib.sha256(raw).hexdigest()
+        fresh=Document(self.path)
+        self.__dict__.update(fresh.__dict__)
+        self.history_warning=''
+        try:
+            from .change_history import record
+            record(self.path,previous,raw,origin)
+        except (OSError,sqlite3.Error) as exc:self.history_warning='Saved, but local history could not be recorded: '+str(exc)
 
 
 def capture_baseline(snapshot: Snapshot):

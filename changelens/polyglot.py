@@ -110,8 +110,10 @@ def link_units(root,units,profile,cancel=None):
         if unit.language not in JS:continue
         for spec in sorted(set(unit.imports)):
             target=resolve_spec(unit,spec)
-            if target:edge(unit.module,units[target].module,1,"imports "+spec,"module_import")
-            elif spec.startswith(".") or spec.startswith(("@/","~/")):warnings.append(f"Unresolved local module {spec} imported by {path}")
+            if target:
+                for line in sorted(set(unit.import_lines.get(spec,[1]))):edge(unit.module,units[target].module,line,"imports "+spec,"module_import")
+            elif spec.startswith(".") or spec.startswith(("@/","~/")):
+                line=unit.import_lines.get(spec,[1])[0];warnings.append(f"Unresolved local module {spec} imported by {path}:{line}")
         for caller,expression,line,lexical,kind in unit.calls:
             checkpoint(cancel); matches=set()
             if expression.startswith("this."):

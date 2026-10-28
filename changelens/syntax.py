@@ -35,6 +35,68 @@ def grammar(language):
     return Language(capsule)
 
 
+def source_tree(path,raw):
+    """Preserve source offsets while working around JS JSX-keyword parsing.
+
+    TSX accepts JSX attribute names such as `class` and `for` that the bundled
+    JS grammar rejects. Use it only for that case, with no TS-only syntax.
+    """
+    from tree_sitter import Parser
+    language=language_for(path);parser=Parser(grammar(language));tree=parser.parse(raw)
+    if language!='javascript' or not tree.root_node.has_error:return tree
+    # The bundled grammar also misses ASI between an arrow-function initializer
+    # and a new-line array-spread statement. Use an existing whitespace byte for
+    # the implicit terminator; byte ranges and line numbers stay unchanged.
+    bodies=set();pending=[tree.root_node]
+    while pending:
+        node=pending.pop();pending.extend(node.named_children)
+        if node.type=='statement_block' and node.parent is not None and node.parent.type in {'arrow_function','function_expression'}:
+            parent=node.parent.parent
+            while parent is not None and parent.type in {'subscript_expression','member_expression','call_expression','await_expression','parenthesized_expression'}:parent=parent.parent
+            if parent is not None and parent.type=='variable_declarator':bodies.add(node.end_byte)
+    masked=bytearray(raw);asi_compat=False
+    for match in re.finditer(rb'}([ \t\r\n]+)(?=\[\s*\.\.\.)',raw):
+        if match.start()+1 not in bodies or b'\n' not in match.group(1):continue
+        spaces=[i for i in range(match.start(1),match.end(1)) if raw[i] in {9,32}]
+        if spaces:masked[spaces[-1]]=59;asi_compat=True
+    data=bytes(masked) if asi_compat else raw
+    if asi_compat:
+        tree=parser.parse(data)
+        if not tree.root_node.has_error:return tree
+    def repair_jsx_text(parser,tree,data):
+        masked=bytearray(data);changed=False;pending=[tree.root_node]
+        while pending:
+            node=pending.pop();pending.extend(node.named_children)
+            # Both bundled grammars reject raw '& Search' JSX text, although
+            # Babel accepts it. Mask only that error's plain-text span, never
+            # JavaScript expressions, tags, attributes, comments or strings.
+            if node.is_error and node.parent is not None and node.parent.type=='jsx_element':
+                span=data[node.start_byte:node.end_byte]
+                if re.fullmatch(rb'&[^<>{}]*',span):
+                    for i,value in enumerate(span):
+                        if value==38:masked[node.start_byte+i]=120;changed=True
+        value=bytes(masked)
+        return (parser.parse(value),value,True) if changed else (tree,data,False)
+    tree,data,text_compat=repair_jsx_text(parser,tree,data)
+    if not tree.root_node.has_error:return tree
+    tsx=Parser(grammar('tsx'));fallback=tsx.parse(data)
+    fallback,data,more_text_compat=repair_jsx_text(tsx,fallback,data)
+    if fallback.root_node.has_error:return tree
+    forbidden={'type_annotation','type_alias_declaration','interface_declaration','enum_declaration','as_expression',
+        'satisfies_expression','non_null_expression','type_assertion','type_parameters','type_arguments','optional_parameter',
+        'accessibility_modifier','abstract_modifier','declare_statement','ambient_declaration','internal_module','implements_clause'}
+    keywords={'class','for','default','delete','new','return','switch','case','var','let','const','if','else','while','do','try','catch','finally','throw','break','continue','function','in','instanceof','typeof','void','with','yield','import','export','extends','super','this'}
+    pending=[fallback.root_node];compatible=text_compat or more_text_compat
+    while pending:
+        node=pending.pop()
+        if node.type in forbidden:return tree
+        if node.type=='jsx_attribute' and node.named_children:
+            name=node.named_children[0]
+            if raw[name.start_byte:name.end_byte].decode('utf-8') in keywords:compatible=True
+        pending.extend(node.named_children)
+    return fallback if compatible else tree
+
+
 @dataclass
 class Unit:
     path: str
@@ -46,6 +108,7 @@ class Unit:
     exports: dict = field(default_factory=dict)
     stars: list = field(default_factory=list)
     imports: list = field(default_factory=list)
+    import_lines: dict = field(default_factory=dict)
     namespace: str = ""
     warnings: list = field(default_factory=list)
 
@@ -56,7 +119,7 @@ class Unit:
 def parse_unit(path,source):
     from tree_sitter import Parser
     from .core import Symbol
-    language=language_for(path); raw=source.encode("utf-8"); tree=Parser(grammar(language)).parse(raw)
+    language=language_for(path); raw=source.encode("utf-8"); tree=source_tree(path,raw)
     if tree.root_node.has_error:
         pending=[tree.root_node]; line=1
         while pending:
@@ -107,6 +170,7 @@ def parse_unit(path,source):
     def import_statement(node,owner):
         spec=literal(field(node,"source"))
         if spec is None:return
+        unit.import_lines.setdefault(spec,[]).append(node.start_point.row+1)
         unit.imports.append(spec)
         if re.match(r"import\s+type\b",text(node)):return
         for child in node.named_children:
@@ -136,6 +200,7 @@ def parse_unit(path,source):
         if kind=="import_statement":import_statement(node,lexical);return
         if kind=="export_statement":
             declaration=field(node,"declaration"); spec=literal(field(node,"source"))
+            if spec:unit.import_lines.setdefault(spec,[]).append(node.start_point.row+1)
             if spec:unit.imports.append(spec)
             before=len(unit.symbols)
             if declaration is not None:
@@ -181,6 +246,7 @@ def parse_unit(path,source):
             if value is not None and value.type=="call_expression" and text(field(value,"function"))=="require":
                 args=field(value,"arguments"); spec=literal(args.named_children[0]) if args and args.named_children else None
                 if spec is not None:
+                    unit.import_lines.setdefault(spec,[]).append(node.start_point.row+1)
                     if name.type=="identifier":bind_import(lexical,text(name),spec,"__require__")
                     elif name.type=="object_pattern":
                         for item in name.named_children:

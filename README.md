@@ -13,6 +13,7 @@ The main workflow is the **Lens**: select a function or review saved changes, fo
 - **Reviewed refactoring:** Python rename/extract operations and bounded local-AI proposals for supported named functions/methods across languages. Proposals receive syntax/signature checks, a diff preview, freshness checks and recoverable backups before explicit application.
 - **Offline formatting:** bundled Black and Prettier; an installed Dart SDK supplies Dart formatting. Formatting changes the editor in one undoable step before explicit saving.
 - **Optional local AI:** Ollama-based inline completion, focused explanations and reviewed suggestions/regeneration. No paid API key is required.
+- **System and feature flows:** source-linked ES-module React/Axios/fetch → Express request paths, handler inputs, model operations, alternative responses and direct UI state/render updates. Ambiguous endpoints and unsupported links remain explicit. Editable diagrams support Undo/Redo and SVG/report export; class inventories remain a separate Code structure view.
 - **Minimal glass-style interface:** opaque code panels, subtle navigation/hover/drawer motion, a reduced-motion setting, stable tab refreshes and hidden Windows helper processes.
 
 ## Language and framework coverage
@@ -66,7 +67,7 @@ Tests run only after an explicit action and repository trust. JS/TS/Flutter sele
 
 ## Validation and evaluation
 
-The latest development verification recorded **167 passing automated tests**, native packaged smoke checks, and two passing controlled Flutter widget tests. See [portable verification summary](evaluation/verification_summary.json) and [reproduction commands](evaluation/README.md).
+The interface refinement passes **193 automated tests**; see [interface and typing changes](evaluation/UI_USABILITY.md). Earlier packaged verification also recorded native smoke checks and two passing controlled Flutter widget tests. See [portable verification summary](evaluation/verification_summary.json) and [reproduction commands](evaluation/README.md).
 
 ```powershell
 $env:QT_QPA_PLATFORM = 'offscreen'
@@ -98,10 +99,24 @@ The large Node formatter runtime is prepared locally by `scripts/prepare_formatt
 | `tests/` | Controlled functional and regression coverage |
 | `scripts/` | Setup, training, evaluation, asset preparation and Windows packaging |
 | `evaluation/` | Methodology, capability notes, pinned public labels/snapshots and portable verification summary |
-| `design/` | Design notes and future architecture/LLD module proposal |
+| `design/` | Design notes and architecture module background |
 
 ## Limits and trust
 
-Analysis parses source without importing repository modules. It reports **potential impact**, not proof of failure or coverage. A passing syntax/signature check does not establish behavioral equivalence. Model proposals may be rejected or legitimately return no improvement. Structural rename/extract remains Python-only. The architecture review/LLD generation module is a future proposal, not an implemented feature.
+Analysis parses source without importing repository modules. It reports **potential impact**, not proof of failure or coverage. A passing syntax/signature check does not establish behavioral equivalence. Model proposals may be rejected or legitimately return no improvement. Structural rename/extract remains Python-only. Feature-flow support currently covers explicit ES-module React/Axios/fetch and Express patterns. Matching endpoint paths does not verify configured hosts, runtime routing or middleware behavior; other frameworks retain their code structure instead of an invented functional architecture.
 
 See [USER_GUIDE.md](USER_GUIDE.md) for the detailed workflow and [LICENSE](LICENSE), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and bundled license files for attribution. Change Lens source is MIT licensed; third-party components retain their respective licenses.
+
+
+### 3D Lens and offline LLD
+
+Lens now has a native 2D/3D projection selector with shared evidence, orbit/pan/zoom and node repositioning. **Architecture** adds deterministic saved-source review, Python import dependencies, class/method inventory, cycle and coupling findings, and module/LLD SVG diagrams. Export creates Markdown, JSON and SVG files with snapshot freshness checks. No LLM or external renderer is required. See [architecture support and verification](evaluation/ARCHITECTURE_LLD.md) and the [user guide](USER_GUIDE.md).
+
+
+The design view now separates **HLD** from **LLD** and includes a native editable canvas: card layout, member edits, notes, proposed relationships, undo/redo, draft recovery, editable JSON save/load and SVG export. Dart member extraction and paginated per-package/per-class exports replace the initial name-only grid. See [design refinement and verification](evaluation/DESIGN_EDITOR.md).
+
+
+Current refinements add a focused Options-based workspace, Lens component search, live changed-line markers, undoable hunk reverts, conflict-checked saved-file history, and token-budgeted local model context with exact snippet editing for oversized functions. See [change control and model context](evaluation/FOCUS_AND_CHANGE_CONTROL.md).
+
+
+Navigation correction: the main workspace switcher, Open/Files/Find and routine actions are visible again in one compact row. More contains advanced controls; HLD/LLD selectors and editing tools remain visible in Design. See [navigation repair](evaluation/NAVIGATION_REPAIR.md).

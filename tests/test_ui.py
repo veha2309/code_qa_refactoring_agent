@@ -28,7 +28,7 @@ def test_minimal_workbench_pickers_and_panels(tmp_path, monkeypatch):
     window.picker.query.setText("toggle project")
     assert window.picker.results.count()==1
     window.picker.activate()
-    assert window.project_panel.isHidden()
+    assert window.project_panel.isVisible()
     window.toggle_project(); window.toggle_outline()
     assert window.inspector.isVisible()
     window.toggle_outline(); window.navigate(1); window.navigate(0)

@@ -355,7 +355,7 @@ def changed_symbols(snapshot: Snapshot, cancel: Event | None = None) -> dict:
         if path in snapshot.hashes and snapshot.hashes[path] not in {"oversized", "unreadable"}:
             current = decode_source((root / path).read_bytes(),path)
         status = "untracked addition" if path in untracked else ("deleted" if not (root / path).exists() else "modified" if old else "added")
-        files.append({"path": path, "status": status,
+        files.append({"path": path, "status": status,"before":old,"after":current,
                       "diff": "".join(difflib.unified_diff(old.splitlines(True), current.splitlines(True),
                                                            fromfile="a/" + path, tofile="b/" + path))})
         if is_config(path):

@@ -4,21 +4,25 @@ Change Lens is a native Windows workspace for investigating changes across suppo
 
 ## Start
 
-The latest executable is `dist\workflow\ChangeLens\ChangeLens.exe`; older builds remain in `dist\automatic`, `dist\refined` and `dist\ChangeLens`. Keep the whole ChangeLens folder together. The build is unsigned and has no installer. Standard source builds through `scripts\build.ps1` write to `dist\ChangeLens`.
+The latest executable is `dist\locked3d\ChangeLens\ChangeLens.exe`; older builds remain in `dist\review`, `dist\interaction`, `dist\flows`, `dist\proposals`, `dist\navigation`, `dist\automatic`, `dist\refined` and `dist\ChangeLens`. Keep the whole ChangeLens folder together. The build is unsigned and has no installer. Standard source builds through `scripts\build.ps1` write to `dist\ChangeLens`.
+
+Local rewrite proposals use a JSON schema requiring `code` and `explanation`. Large declarations instead request bounded exact snippet edits, which are assembled locally. An invalid response receives one corrective retry with the same source excerpt. If it still fails, Refactor shows the error and leaves Apply disabled. Syntax, signature and freshness checks still run before a preview is accepted; this does not prove unchanged behavior.
 
 For development, run `powershell -ExecutionPolicy Bypass -File scripts\setup.ps1`, then double-click `Start Change Lens.cmd` or run `.\.venv\Scripts\python.exe launcher.py`. Setup downloads free dependencies; normal editing, completion, refactoring and analysis run offline.
+
+The top row keeps **Lens, Editor, Changes, Tests, Refactor, Notes, and Design** visible for one-click switching. **Open, Files, Find** and the current view's primary actions are also visible. **More** contains advanced settings and less-used commands. HLD/LLD selectors and design editing controls stay visible; selecting a card reveals its inspector. The large decorative header remains removed, so most of the window is still workspace.
 
 ## Everyday workflow
 
 1. **Open a folder.** Indexing and comparison setup happen automatically. Git projects use their latest commit. Other folders get a comparison point on their first open, preserved across sessions. Edits made before that first recording cannot be recovered.
 2. **Edit and save.** Checks refresh after a short pause without switching away from your code. Detected external file changes refresh checks too; clean open buffers reload, while unsaved buffers are preserved.
-3. **Follow changes.** The Lens shows paths from a focused change to affected code and tests. Click a node to highlight its path and open the evidence drawer. **Read diffs** opens saved edits; **Run linked tests** selects tests for the focused path. Test execution still requires an explicit action and initial repository trust.
+3. **Check changes.** The Lens shows paths from a focused change to affected code and tests. Click a node to highlight its path and open the evidence drawer. **Read diffs** opens saved edits; **Run linked tests** selects tests for the focused path. Test execution still requires an explicit action and initial repository trust.
 
 With no recorded edits, the Lens automatically explores a function and clearly labels that state. The function picker changes focus without another setup step. **Fit map** fits the graph; drag to pan, scroll to explore and Ctrl+wheel to zoom. Large maps show at most 36 nodes and disclose the omitted count. The complete impact table remains under **Evidence table**. Solid links are resolved static references; dashed links contain inferred or historical references. Neither establishes that a test will fail.
 
 The file panel is hidden in Lens and Brief. **Files** or Ctrl+B toggles it; **Editor** or Ctrl+1 returns to code. Node **Open this code** opens the corresponding source. Details remain hidden until a node is selected. **Explain this path** opens a focused model brief based on the displayed symbols and source lines.
 
-Comparison selection and run settings remain under **Advanced** options. They are not required for ordinary use. Automatic checks do not save unsaved buffers or execute repository code. **Follow changes**, refactoring previews and test runs save editor buffers as explicit workflow actions.
+Comparison selection and run settings remain under **Advanced** options. They are not required for ordinary use. Automatic checks do not save unsaved buffers or execute repository code. **Check changes**, refactoring previews and test runs save editor buffers as explicit workflow actions.
 
 ## Language and framework support
 
@@ -34,13 +38,13 @@ Inline local AI completion and focused explanations accept these source language
 
 ## Local coding AI for the presentation laptop
 
-The preset targets **16 GB RAM and an RTX 3050 with 4 GB VRAM**. It uses `qwen2.5-coder:1.5b-base` for inline completion and optional `qwen2.5-coder:3b` for explanations and suggested rewrites. Both requests use a 2,048-token context; the app unloads its previous model when switching between them. Actual speed and memory headroom must be tested on the presentation laptop, especially when other GPU applications are open.
+The preset targets **16 GB RAM and an RTX 3050 with 4 GB VRAM**. It uses `qwen2.5-coder:1.5b-base` for inline completion and optional `qwen2.5-coder:3b` for explanations and suggested rewrites. Completion uses a 2,048-token window. Assistant requests pack code and output reserves into 2K or 4K windows by default; optional 8K is available under More → Local models / context settings. Larger context uses more memory; the app unloads its previous model when switching between them. Actual speed and memory headroom must be tested on the presentation laptop, especially when other GPU applications are open.
 
 Install and start [Ollama for Windows](https://ollama.com/download/windows) once. Open **Brief → Model settings**, prepare the autocomplete model (about 1 GB), and optionally the brief model (about 2 GB). **Connect models** checks and warms downloaded models. Settings collapse once the brief model is ready. Setup is remembered for later launches. Downloads require internet; normal inference uses only `127.0.0.1:11434`, with proxies bypassed and cloud models rejected. The executable does not include Ollama or model weights; prepare the presentation machine before disconnecting from the internet.
 
 After pausing at the end of a line, generated code appears in muted text. **Tab** accepts it as one undoable edit; **Escape** dismisses it; **Ctrl+Enter** requests a completion. **Ctrl+Space** remains Jedi name/attribute completion. Suggestions are discarded if you change the source or cursor before the response arrives. Model loading can make the first request much slower than warm requests; loading happens in a background worker.
 
-In **Brief**, use **Explain focused code** or **Propose a reviewable improvement**. Unfocused whole-file summaries are avoided; choose a function or a selected fragment. Markdown is rendered as readable text, with HTML, image/resource loading and link navigation disabled. Model interpretation remains separate from recorded evidence. A generated rewrite must preserve the function signature and decorators, pass syntax validation, and contain no new imports. It opens as a diff and only writes source after **Apply reviewed patch**, with the existing backup and freshness checks. These checks do not establish semantic equivalence. The assistant handles functions/fragments up to 3,500 characters; it is not an autonomous repository-wide editing agent.
+In **Brief**, use **Explain focused code** or **Suggest a change**. Unfocused whole-file summaries are avoided; choose a function or a selected fragment. Markdown is rendered as readable text, with HTML, image/resource loading and link navigation disabled. Model interpretation remains separate from recorded evidence. A generated rewrite must preserve the function signature and decorators, pass syntax validation, and contain no new imports. It opens as a diff and only writes source after **Apply reviewed patch**, with the existing backup and freshness checks. These checks do not establish semantic equivalence. The fixed 3,500-character cap has been removed. Functions/fragments are packed against a token estimate and output reserve. Oversized rewrites use exact snippet edits against a disclosed cursor-centred excerpt; omitted source is assembled locally and then validated. This does not establish understanding of omitted code or repository-wide behavior.
 
 On the actual presentation laptop, click **Brief → Model settings → Check presentation readiness**. This measures three completions locally without executing generated code and saves a report under application data. No development tools are needed for this check. A command is also available for source development:
 
@@ -52,7 +56,7 @@ The existing scratch-trained logistic model still ranks tests. The optional codi
 
 ## Editor details
 
-1. Choose **File → Open folder** (**Ctrl+O**) for your own repository, or **Open sample project** for an editable copy under `%LOCALAPPDATA%\ChangeLens\sample-project`. Existing sample edits are preserved.
+1. Choose **File → Open folder** (**Ctrl+O**) for your own repository, or **Try a sample** for an editable copy under `%LOCALAPPDATA%\ChangeLens\sample-project`. Existing sample edits are preserved.
 2. Use the file explorer to open files or select a function. Tabs show an unsaved marker when modified.
 3. Press **Ctrl+Space** for local Python completions. Suggestions also appear after a dot or an identifier prefix. Enter/Tab accepts the selected item. Completion is static Python intelligence from Jedi, not LLM text generation.
 4. For Python, press **F12** to follow a resolvable definition within the workspace. Right-click the editor for completion and refactoring commands.
@@ -60,7 +64,16 @@ The existing scratch-trained logistic model still ranks tests. The optional codi
 
 The editor supports Python, JS/JSX, TS/TSX, Java, C#, Go, Rust, Dart and common text/config files up to 2 MB. The analysis engine supports Python syntax understood by the bundled Python 3.10 runtime; unsupported syntax is reported.
 
-**Ctrl+P** searches project files. **Ctrl+Shift+P** opens the searchable command palette; use Up/Down and Enter to choose a command. **Ctrl+B** toggles the file panel. **Ctrl+Shift+O** opens the optional outline. The bottom strip opens Lens, Editor, Diff, Tests, Fix and Brief. The evidence table and diagnostics remain in the View menu and command palette. **Ctrl+1** returns to the editor with open files and cursor positions preserved.
+**Ctrl+P** searches project files. **Ctrl+Shift+P** opens the searchable command palette; use Up/Down and Enter to choose a command. **Ctrl+B** toggles the file panel. **Ctrl+Shift+O** opens the optional outline. The workspace tabs above the content open Lens, Editor, Changes, Tests, Refactor and Brief. The evidence table and diagnostics remain in the View menu and command palette. **Ctrl+1** returns to the editor with open files and cursor positions preserved.
+
+The editor uses indentation from the file. Tab moves to the next indent stop, Shift+Tab unindents selected lines, and Backspace removes one indent step in leading whitespace. Home toggles between the first non-whitespace character and column zero; Shift+Home selects to that position.
+
+- **Ctrl+/** toggles line comments for supported source languages.
+- **Ctrl+Shift+D** duplicates the selected text, or the current line when nothing is selected.
+- **Ctrl++ / Ctrl+-** changes the current editor's font size; **Ctrl+0** resets it. Font size applies to the open editor for this session.
+- Each comment/duplicate action is one undo step. Read-only diff panels cannot be changed.
+
+Language icons distinguish source files, configuration and documentation. Folder colors identify source, test, UI and resource directories, and the folder glyph changes when expanded. File paths appear above the document tabs and in each tab's tooltip. File and command pickers show a result count and an explicit no-match state. An automatic completion popup accepts Enter only after you navigate its choices; otherwise Enter inserts a newline. Tab accepts a visible suggestion.
 
 ## Format a document
 
@@ -88,7 +101,7 @@ Symbol analysis uses the cursor location against freshly indexed source, so inse
 
 **Tests** selects candidates with dependency paths rather than filling an arbitrary top-five list. Resolved paths rank before inferred paths; name-only and weak matches require manual selection through **Include name-only / weak matches**. Scores rank tests within their evidence groups and are not calibrated confidence values. The active model or structural fallback is shown above the list. Click a test for its full source-to-test evidence path, including filenames and line numbers. Manual selections survive filter changes until the next analysis.
 
-Editing indexed source or configuration marks existing results and previews out of date. Saving refreshes checks automatically; typing a refactoring name refreshes its preview. Source hash checks also reject disk changes before execution or patch application. Native filesystem monitoring observes indexed files and up to 2,048 non-excluded directories. Use **Follow changes** after unobserved changes, including Git metadata outside the opened folder in some worktrees. JSON and Markdown reports distinguish recommended tests, unlinked candidates, actual selected-test outcomes and checks not performed.
+Editing indexed source or configuration marks existing results and previews out of date. Saving refreshes checks automatically; typing a refactoring name refreshes its preview. Source hash checks also reject disk changes before execution or patch application. Native filesystem monitoring observes indexed files and up to 2,048 non-excluded directories. Use **Check changes** after unobserved changes, including Git metadata outside the opened folder in some worktrees. JSON and Markdown reports distinguish recommended tests, unlinked candidates, actual selected-test outcomes and checks not performed.
 
 No resolved test path is a possible linkage gap, not proof that coverage is absent. Module-level edits conservatively include symbols in the affected Python file.
 
@@ -157,3 +170,95 @@ See [WORKFLOW_REFINEMENTS.md](evaluation/WORKFLOW_REFINEMENTS.md) for the HydroN
 After edits, the Lens retains every project symbol in its focus picker and offers **All changes** for multiple changed symbols. Caller tracing still crosses files. **Ctrl+F** shows match counts and highlights; **Ctrl+Shift+F** searches project text with file/line results.
 
 Dart/Flutter is supported for static declarations, widget-reference paths, tests, diffs and local AI. Use **Project: Open Flutter sample** in the command palette. SDK formatting uses an installed Dart SDK; Flutter test execution needs a prepared Flutter SDK and project dependencies, then explicit repository trust. The app does not download the SDK, resolve pub dependencies or launch an emulator.
+
+
+## Lens maps and dependency layers
+
+Choose **Impact map**, **Layers** or **3D** in Lens. 3D is optional; the flat map remains the default. All three views use the same recorded graph, inferred-link setting, evidence drawer and 36-node display limit. Arrows run from a dependency toward its potential callers: they describe potential impact, not execution order.
+
+- Drag to pan; scroll to zoom. In Layers, arrow keys also pan.
+- In **3D**, node positions are fixed. Click a node or label to inspect it; dragging a node cannot reposition it. Drag empty space to orbit, right-drag to pan, and scroll to zoom. Arrow keys orbit; Home or Fit map resets the camera. Node labels face the screen and avoid collisions; hover/select a point for its full identity in the header.
+- Check **Include inferred links** to add broad scope, callback, historical and framework inferences. These are excluded from the default graph.
+- Click a node to highlight its dependency paths and open the shared evidence drawer.
+- **Fit map** or **Home** resets the Layers view.
+
+All maps use native CPU rendering and require no browser, GPU runtime or downloaded assets. Selecting a node shows its recorded evidence path and direct references, with source locations and resolved/inferred classifications.
+
+## Architecture review and implementation LLD
+
+Open **Design** in the workspace navigation. It reviews the current project's saved files automatically on first entry; **Review project** refreshes the inventory. Background work can be cancelled using the existing Cancel action. Unsaved buffers are excluded and disclosed.
+
+- **Review** groups source/import coverage gaps and dependency concerns. Cycles include a concrete closed path, exact import/reference lines and a next step. Select an item to read its full interpretation; expand it and double-click a source row to inspect the evidence. System rows open representative extracted feature flows. Source length and fan-out thresholds remain inventory metrics, rather than hundreds of independent defect claims.
+- **Analysis coverage** separates parser exclusions, skipped files, unresolved local code imports, non-source resource imports and unresolved dynamic/global-shaped references. Categories and source/text search operate on the full diagnostic records; the tree shows up to 500 matching groups and three examples per group. These are analyzer limits, not code-error counts. The legacy Diagnostics view also groups occurrences rather than creating one item per raw message.
+- **Code inventory** lists classes, methods/functions, ownership, source ranges and declaration excerpts. It is separate from a feature flow. Double-click a declaration to open its code.
+- **Dependencies** lists file-to-file relationships and expandable reference/import evidence, including source lines and resolved/inferred classifications. Python import-only files and relative imports are included; ambiguous local module names are not chosen. Conditional imports are potential links, not proof they execute.
+- **Diagrams** previews module dependencies and an implementation/class LLD as standalone SVG. Diagram arrows point from caller/importer to dependency. Diagrams now separate HLD packages from scoped LLD classes/functions and paginate at ten items per page. Exports include a complete per-class/function detail book, not an alphabetical first-48 selection. The complete report keeps all indexed records. The UI inventory caps at 2,000 declarations, 500 dependencies and 30 evidence rows per dependency; exports retain all records.
+
+**Export report + diagrams** creates a new folder in your chosen location containing a readable `report.md`, complete `report.json`, `architecture.svg` and `lld.svg`. Markdown focuses on system/request coverage, grouped review items, source witnesses and next steps. JSON preserves every declaration, raw heuristic candidate, graph edge and diagnostic occurrence. No existing files are overwritten. Export rechecks the Git revision and file hashes and rejects stale designs. Save/discard editor changes before export. Reports and diagrams require no LLM, internet connection or external renderer.
+
+This is an implementation-derived design description, not a requirements-driven proposed architecture. Dart fields, constructors, enum values and method signatures are now syntax-derived. Runtime type resolution, framework wiring, deployment topology, databases and network protocols are not inferred. Declared field-type links are marked unverified and drawn dashed. Existing adapter limits remain visible. Framework names are manifest hints. No repository modules or tests are executed to generate the review.
+
+Source CLI equivalent:
+
+```powershell
+.\.venv\Scripts\python.exe -m changelens.architecture "C:\path\to\project" --output "C:\path\to\reports"
+```
+
+
+## Editable HLD and LLD
+
+Open **Design → System & feature flows** for a system overview and feature implementation diagrams. This is the default when supported HTTP requests are found. Search a screen, function, URL or source path; select a feature to see source-linked request/route matching, registered handlers, input fields, model operations, response alternatives, direct client state assignments and list rendering. Cards can be moved and edited; notes and proposed links support Undo/Redo, Save design and SVG export. **Ctrl+S** saves the active canvas.
+
+The current flow adapter supports ES-module React/Axios/fetch and Express with literal routes and mounts. Endpoint matches remain candidates: configured hosts, proxies, runtime branches, middleware behavior and actual authorization have not been executed or verified. Unmounted routers are not assumed to be server entry points. Ambiguous routes, unsupported service indirection, missing state propagation and skipped files remain visible. Manifest evidence distinguishes web applications from server-side outbound HTTP consumers. Unsupported frameworks retain their code inventory; no functional flow is invented.
+
+Exports add `systems.svg`, `flows.md` and a `flows/` SVG per extracted request. `architecture.svg` becomes the system overview and `lld.svg` a representative feature flow when flow evidence exists. `report.json` retains every extracted request, route, match and source anchor. No project code is executed. Runtime behavior and equivalence still require separate validation.
+
+Use **Design → Code structure** for package dependencies or declarations and members. Source folders are not treated as business responsibilities. Tests/generated files are omitted there by default; the full report retains their records.
+
+The native canvas supports:
+
+- Drag cards; use Space+drag to pan, Ctrl+wheel or +/− to zoom, and **Fit** to see the whole page. Initial framing keeps text readable rather than shrinking a large page to tiny text.
+- Drag a selection rectangle or Ctrl+click to select multiple cards, then drag any selected card to move the group. Their spacing and selection are retained; one Undo/Redo handles the complete move. This works in both Code structure and feature-flow canvases.
+- Select a card, edit its title, fields and operations in the inspector, then **Apply draft edit**. LLD cards include full available fields/methods. Notes use the operations/text area.
+- **Add card**, **Note**, select endpoints and **Add relationship**. Proposed relationships can be dependencies, associations, inheritance or calls. Select a connector to edit its label. Select cards/connectors and **Delete** to remove them from the draft.
+- **Undo/Redo** buttons; Ctrl+Z/Ctrl+Y in the canvas. Undo history applies to the current page and resets when switching pages; draft contents persist.
+- **Save design** (or Ctrl+S while Architecture is active) writes an editable `.cldesign.json` page. **Load design** reopens it. Historical snapshots are disclosed, and historical drafts cannot navigate current source.
+- **Export SVG** captures the current edited page and marks it DESIGN DRAFT. It is separate from the top-level report export, which remains source-derived.
+
+Drafts recover automatically under the current user's application-data `design-drafts` directory, keyed by snapshot, level, package and page. Layout edits preserve source attribution. Content edits and proposed connectors are marked USER DRAFT, and original extracted content is retained in edited items. Draft edits never alter repository source or promote a proposed relationship to verified evidence. Explicitly save important designs for sharing. Editor limits are 200 cards and 1,000 connectors per page.
+
+Report export now includes **lld-index.md** and an **lld/** directory with all package pages and complete per-class/function SVG details. `architecture.svg` is HLD; `lld.svg` is a concrete LLD package view. Fields and operations are wrapped rather than reduced to name-only entries. No external renderer, web server, LLM or Figma account is required.
+
+Lens offers the flat impact map, fixed dependency layers and an optional orbitable 3D explorer. All retain the 36-node display bound.
+
+
+## Review and revert code
+
+Editor gutter markers compare the live buffer against Git HEAD or the automatically recorded project comparison. Green marks additions, amber marks replacements and red anchors deletions. The comparison is computed after a typing pause. **F7 / Shift+F7** moves between changed sections. Click the gutter near a marker, use the editor context menu, or choose **More → Review / revert edits**.
+
+The review dialog has four comparisons: **Project comparison**, **Unsaved edits**, **Since this tab opened**, and **Saved file history**. Select a hunk to see its before/after text and current line location. **Revert selected hunk** and **Revert all shown edits** affect the buffer as one undo step. Ctrl+S saves. If the buffer changed since preview, Refresh is required before reverting.
+
+**Saved file history** retains up to 30 recent entries per file and includes older refactoring backups where available. Preview a before-save version against the current saved file, then **Restore version before this save**. Unsaved edits must be saved or discarded first. Restoration checks the current file hash against the preview and records its own recovery point. It preserves the saved encoding/BOM and line endings. Git HEAD, commits and the staging area are not reset. New history lives locally in `%LOCALAPPDATA%\ChangeLens\file-history.sqlite3`; it contains file contents. Source modifications made outside Change Lens are not automatically versioned.
+
+Design drafts retain Undo/Redo. **More → Design → Reset page to source (undoable)** removes draft overrides from the current page; Undo restores them.
+
+## Component search and focused Lens
+
+Lens has a visible **Find a component, function or file** field. It searches all eligible indexed focus symbols, prioritises exact names, displays match counts and a no-match state, and shows up to 100 results. Use Up/Down and Enter or click a result to focus the real dependency graph; Escape clears the query. Files and duplicate names are distinguished by their paths.
+
+The readable trace map is the default. **Layers** and **Fit map** remain visible in Lens; the menu also provides linked tests and detailed evidence. The code and graph take most of the window. In the design editor, selecting a card reveals its inspector.
+
+## Large-code local model context
+
+**More → Local models / context settings** chooses a 2K, 4K (balanced maximum), or 8K maximum. The app uses a smaller window when the request fits, consults the model's reported capacity, and reserves output space before selecting source. Token counts are estimates; Ollama's actual input count is reported when available. **More → Inspect last model context** shows the window, estimated input, output reserve, included line ranges and omission status. Ranges are relative to the focused declaration, not absolute file lines.
+
+Related context uses bounded caller/callee declaration excerpts. Large functions use a cursor-centred excerpt rather than an arbitrary first-3,500-character rejection. Explanations disclose omissions. Oversized rewrites ask the model for exact old/new snippets in the supplied excerpt; each original must be unique, nonoverlapping and present in the visible context. The rest of the function is preserved locally. The full assembled source still undergoes signature/import/syntax checks and explicit diff review. No generated code is executed. Truncated output and detected context-budget overruns are rejected.
+
+This handles large source files through focused context; it does not increase the model's inherent reasoning ability or provide a full review of omitted code. The 8K setting has no presentation-laptop speed/memory guarantee.
+
+
+## Navigation correction
+
+The menu-only layout has been replaced. Use the visible workspace buttons to switch views directly. Editor exposes Save and Review edits; Lens exposes Check and Fit; Refactor exposes Preview and Apply; Tests exposes Run tests; Design exposes Review and Export. Button availability follows current file, patch and worker state. More retains advanced controls, model context settings, command menus and uncommon tools. Files is a visible checked toggle, and Find opens file search. Ordinary operation no longer requires expanding a menu.
+
+Design has visible review tabs, HLD/LLD and package/page selectors, and its editing toolbar. Applied property edits and Undo/Redo keep the relevant card selected when it still exists, so the inspector can be used continuously. Existing hunk reverts, saved history, context handling and diagram exports are unchanged.
