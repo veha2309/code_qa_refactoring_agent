@@ -10,6 +10,10 @@ if (-not (Test-Path -LiteralPath 'resources\formatting\manifest.json') -or -not 
     & .\.venv\Scripts\python.exe -m scripts.prepare_formatter
     if ($LASTEXITCODE -ne 0) { throw 'Formatter asset preparation failed' }
 }
+if (-not (Test-Path -LiteralPath 'resources\refactoring\node_modules\typescript\lib\typescript.js')) {
+    & .\.venv\Scripts\python.exe -m scripts.prepare_typescript
+    if ($LASTEXITCODE -ne 0) { throw 'TypeScript refactoring asset preparation failed' }
+}
 & .\.venv\Scripts\python.exe -m scripts.prepare
 if ($LASTEXITCODE -ne 0) { throw 'Demo manifest creation failed' }
 & .\.venv\Scripts\python.exe -m scripts.train

@@ -12,6 +12,7 @@ import json
 from changelens.lens import map_records
 from changelens.ranking import resources
 from changelens.workbench import MainWindow
+from changelens.qa_ui import REVIEW_PAGE
 
 
 def wait(app,window):
@@ -34,6 +35,8 @@ def test_map_filters_roots_preserves_visible_evidence_and_caps():
 def test_lens_node_navigation_and_brief_setup(tmp_path,monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA",str(tmp_path))
     app=QApplication.instance() or QApplication([]); window=MainWindow(); window.show(); window.open_path(resources()/"demo"); wait(app,window)
+    assert window.pages.currentIndex()==REVIEW_PAGE
+    window.workspace_buttons[6].click()
     assert window.pages.currentIndex()==6 and window.nav.currentItem().text()=="Lens"
     assert window.lens_view.focus.count()>0 and not window.lens_view.trace.isVisible()
     assert not window.project_panel.isVisible() and not window.lens_view.detail.isVisible()
@@ -96,6 +99,18 @@ def test_lens_runs_only_tests_linked_to_the_focused_change(tmp_path,monkeypatch)
     selected=[]; monkeypatch.setattr(window,"validate_demo",lambda mutation=False:selected.extend(window.checked_tests()))
     window.check_and_run()
     assert selected==["test_a.py:test_beta"]
+    selected.clear()
+    window.review_tests.click()
+    assert window.pages.currentIndex()==6 and window.tool_window.page_index==3
+    assert window.test_table.isVisible() and window.checked_tests()==["test_a.py:test_beta"]
+    assert not selected  # Inspecting the test selection does not execute it.
+    window.tool_window.close()
+    assert window.tool_window is None and window.pages.currentIndex()==6
+    (root/"a.py").write_text("def alpha(): return 4\ndef beta(): return 2\n")
+    window.analyze_changes(); wait(app,window)
+    window.review_diff.click()
+    assert window.tool_window.page_index==1 and window.changes_view.isVisible()
+    window.tool_window.close()
     window.close(); app.processEvents()
 
 

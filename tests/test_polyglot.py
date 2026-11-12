@@ -194,7 +194,9 @@ def test_multilanguage_native_editor_staleness_and_guards(tmp_path,monkeypatch):
     window.open_path(root);wait(app,window)
     window.open_file('src/App.tsx');window.navigate(0)
     assert window.current_editor()._syntax_language=='tsx'
-    assert not window.preview_button.isEnabled()
+    assert window.preview_button.isEnabled() and window.operation.model().item(0).isEnabled()
+    window.operation.setCurrentIndex(window.operation.findData('extract_variable'))
+    assert window.operation.currentData()=='extract_variable'
     window.analyze(['src/math.ts:total']);wait(app,window)
     assert window.validate_button.isEnabled()
     editor=window.current_editor();editor.moveCursor(QTextCursor.MoveOperation.End);editor.insertPlainText('\n// unsaved\n')

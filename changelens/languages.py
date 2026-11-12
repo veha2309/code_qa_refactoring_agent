@@ -17,6 +17,13 @@ def is_config(path):return Path(path).name in CONFIGS or Path(path).suffix.lower
 def is_indexable(path):return is_source(path) or is_config(path)
 
 
+TYPESCRIPT_LANGUAGES = {"javascript", "typescript", "tsx"}
+
+
+def structural_refactoring(path):
+    return language_for(path) in TYPESCRIPT_LANGUAGES | {"python"}
+
+
 def json_config(text):
     """JSONC comments/trailing commas, without altering quoted text or evaluating JS."""
     out=[]; index=0; quoted=False
@@ -62,7 +69,9 @@ def capabilities(language):
             "impact":"resolved lexical references plus labeled inferences" if semantic else "structural file/module dependencies; symbol call resolution unavailable",
             "test_discovery":"pytest" if language=="python" else 'literal Dart test/testWidgets callbacks' if language=='dart' else "declared JS/TS test callbacks" if semantic else "named test declarations (structural)",
             "test_execution":"pytest" if language=="python" else 'prepared Flutter SDK and project dependencies; selected files after trust' if language=='dart' else "installed Jest/Vitest or Node test runner (selected files)" if semantic else "recommendations only",
-            "static_completion":language=="python","local_ai":True,"ai_rewrite":True,"reviewed_refactoring":language=="python"}
+            "static_completion":language=="python","local_ai":True,"model_findings":True,"model_refactoring":True,"ai_rewrite":True,
+            "structural_refactoring":language in TYPESCRIPT_LANGUAGES | {"python"},
+            "reviewed_refactoring":language in TYPESCRIPT_LANGUAGES | {"python"}}
 
 
 def project_profile(root,hashes):

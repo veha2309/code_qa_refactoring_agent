@@ -16,9 +16,12 @@ if __name__ == "__main__":
     lines += ['Bundled offline formatting uses Black 26.5.1 (Python package license below), Prettier 3.9.10 (MIT) and Node.js 24.12.0 (MIT and included third-party terms).',
               'Prettier license: resources/formatting/prettier/LICENSE. Node and embedded third-party licenses: resources/formatting/NODE_LICENSE.',
               'Pinned sources and integrity hashes: resources/formatting/manifest.json and scripts/prepare_formatter.py.', '']
+    lines += ['JavaScript and TypeScript refactoring uses TypeScript 5.9.3 (Apache-2.0).',
+              'License and notices: resources/refactoring/node_modules/typescript/LICENSE.txt and ThirdPartyNoticeText.txt.', '']
     for dist in sorted(metadata.distributions(), key=lambda d: d.metadata.get("Name", "")):
         name = dist.metadata.get("Name", "unknown")
-        lines.append(f"- {name} {dist.version}: {dist.metadata.get('Home-page', '')}")
+        homepage = dist.metadata.get("Home-page", "").strip()
+        lines.append(f"- {name} {dist.version}" + (f": {homepage}" if homepage else ""))
         for item in dist.files or []:
             if any(term in item.name.lower() for term in ("license", "copying", "notice")):
                 source = Path(dist.locate_file(item))
@@ -32,5 +35,5 @@ if __name__ == "__main__":
             target = output / ("evaluation-" + name) / source.name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
-    Path("THIRD_PARTY_NOTICES.md").write_text("\n".join(lines), encoding="utf-8")
+    Path("THIRD_PARTY_NOTICES.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 

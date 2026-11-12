@@ -7,6 +7,8 @@ import hashlib
 import posixpath
 import re
 import textwrap
+from copy import deepcopy
+from collections import OrderedDict
 from html import escape
 from collections import defaultdict
 from pathlib import Path
@@ -18,8 +20,30 @@ from .syntax import grammar,source_tree
 
 METHODS={'get','post','put','patch','delete','head','options'}
 FUNCTIONS={'function_declaration','function_expression','arrow_function','method_definition'}
+EXTRACTOR_VERSION=2
+_MODULE_CACHE=OrderedDict()
+
+
+def cached_module(path,source,paths,cancel):
+    """Cache syntax facts only; resolve imports again against today's file set."""
+    key=(EXTRACTOR_VERSION,path,hashlib.sha256(source.encode('utf-8')).hexdigest())
+    checkpoint(cancel)
+    hit=key in _MODULE_CACHE
+    if not hit:
+        _MODULE_CACHE[key]=scan_module(path,source,paths,cancel)
+        while len(_MODULE_CACHE)>2048:_MODULE_CACHE.popitem(last=False)
+    _MODULE_CACHE.move_to_end(key)
+    module=deepcopy(_MODULE_CACHE[key])
+    if module:
+        for imp in module['imports'].values():imp['path']=resolve_import(path,imp['spec'],paths)
+        for handler in list(module['handlers'].values())+[r['inline'] for r in module['routes'] if r['inline'] is not None]:
+            for data in handler['data']:
+                data['model_path']=module['imports'].get(data['operation'].split('.')[0],{}).get('path')
+            handler['data']=[d for d in handler['data'] if d['model_path']]
+            for helper in handler['helpers']:helper['definition']=module['imports'].get(helper['name'],{}).get('path')
+    return module,hit
 LIMITS=[
-    'ES-module React/Axios/fetch and Express literal routes/mounts are supported statically. CommonJS wiring and other frameworks remain code structure only.',
+    'Static request adapters support ES-module Axios/fetch, Express mounts, Next App Router exports and direct FastAPI/Flask application decorators. Computed framework wiring remains unresolved.',
     'Matching method and URL path is a candidate connection: configured hosts, proxies, runtime dispatch and authorization are not verified.',
     'Handler branches and data operations are source facts, not a simulation. Service wrappers, computed routes and indirect response transformations can remain unresolved.',
     'No repository code or API requests were executed. Unsupported or ambiguous links are not replaced with guessed connections.'
@@ -143,7 +167,7 @@ def handler_facts(path,node,raw,imports):
             name=txt(callee,raw)
             if name not in {'String','Number','Boolean','Error','parseInt','parseFloat'}:helpers.append(fact(path,n,name=name,definition=imports.get(name,{}).get('path')))
         binding=imports.get(receiver,{})
-        if method in {'find','findOne','findById','create','save','updateOne','findOneAndUpdate','deleteOne','findByIdAndDelete','aggregate','countDocuments'} and binding.get('path'):
+        if method in {'find','findOne','findById','create','save','updateOne','findOneAndUpdate','deleteOne','findByIdAndDelete','aggregate','countDocuments'} and binding.get('spec','').startswith('.'):
             data.append(fact(path,n,operation=receiver+'.'+method,model_path=binding['path'],filter_fields=keys(args[0],raw) if args else []))
         if method not in {'json','send'}:continue
         status=None;owner=field(callee,'object')
@@ -151,7 +175,13 @@ def handler_facts(path,node,raw,imports):
             status_receiver,status_method=member(field(owner,'function'),raw);status_args=arguments(owner)
             if status_receiver=='res' and status_method=='status' and status_args and status_args[0].type=='number':status=txt(status_args[0],raw)
             else:continue
-        elif receiver!='res':continue
+        elif receiver!='res':
+            if method!='json' or not (receiver=='Response' or imports.get(receiver,{}).get('spec')=='next/server' and imports.get(receiver,{}).get('name')=='NextResponse'):continue
+            status='200'
+            if len(args)>1 and args[1].type=='object':
+                pair=next((p for p in args[1].named_children if txt(field(p,'key'),raw)=='status'),None)
+                value=field(pair,'value')
+                if value is not None:status=txt(value,raw) if value.type=='number' else 'dynamic'
         value=args[0] if args else None
         if value is not None and value.type=='identifier':value=objects.get(txt(value,raw))
         responses.append(fact(path,n,status=status or 'default',fields=keys(value,raw),shape_known=value is not None and value.type=='object'))
@@ -162,7 +192,24 @@ def scan_module(path,source,paths,cancel):
     from tree_sitter import Parser
     raw=source.encode('utf-8');root=source_tree(path,raw).root_node
     if root.has_error:return None
-    nodes=list(walk(root));imports={};exports={};routers=set();router_kinds={};clients={};routes=[];mounts=[];requests=[];handlers={};states=[];renders=[]
+    nodes=list(walk(root));imports={};exports={};routers=set();router_kinds={};clients={};routes=[];mounts=[];requests=[];handlers={};states=[];renders=[];calls=[]
+    local_bindings=defaultdict(set)
+    for n in nodes:
+        if n.type in FUNCTIONS:
+            params=field(n,'parameters') or field(n,'parameter')
+            if params is not None:local_bindings[n.start_byte].update(txt(c,raw) for c in walk(params) if c.type=='identifier')
+        if n.type=='variable_declarator':
+            parent=n.parent
+            while parent is not None and parent.type not in FUNCTIONS:parent=parent.parent
+            if parent is not None:
+                name=field(n,'name')
+                local_bindings[parent.start_byte].update(txt(c,raw) for c in walk(name) if c.type in {'identifier','shorthand_property_identifier_pattern'})
+    def locally_shadowed(n,name):
+        parent=n.parent
+        while parent is not None:
+            if parent.type in FUNCTIONS and name in local_bindings[parent.start_byte]:return True
+            parent=parent.parent
+        return False
     for n in nodes:
         if n.type=='import_statement':
             spec=literal(field(n,'source'),raw);clause=next((c for c in n.named_children if c.type=='import_clause'),None)
@@ -181,6 +228,15 @@ def scan_module(path,source,paths,cancel):
                 for d in defs:
                     name=txt(field(d,'name'),raw)
                     if name:exports['default' if any(c.type=='default' for c in n.children) else name]=name
+            clause=next((c for c in n.named_children if c.type=='export_clause'),None)
+            spec=literal(field(n,'source'),raw)
+            if clause is not None:
+                for entry in clause.named_children:
+                    name=txt(field(entry,'name'),raw);alias=txt(field(entry,'alias'),raw) or name
+                    if not name:continue
+                    local='__reexport_'+alias if spec else name
+                    if spec:imports[local]={'path':resolve_import(path,spec,paths),'name':name,'spec':spec}
+                    exports[alias]=local
     for n in nodes:
         checkpoint(cancel)
         if n.type=='variable_declarator':
@@ -204,6 +260,12 @@ def scan_module(path,source,paths,cancel):
             if name!='<callback>':handlers[(name,n.start_point.row+1)]={**fact(path,n,name=name),**handler_facts(path,n,raw,imports)}
         if n.type!='call_expression':continue
         fn=field(n,'function');receiver,method=member(fn,raw);args=arguments(n);url=literal(args[0],raw) if args else None
+        if fn is not None and fn.type=='identifier':
+            parent=n.parent
+            while parent is not None and parent.type in {'await_expression','parenthesized_expression'}:parent=parent.parent
+            result=txt(field(parent,'name'),raw) if parent is not None and parent.type=='variable_declarator' else None
+            calls.append(fact(path,n,name=txt(fn,raw),owners=owners(n,raw),binding=result,
+                binding_scope=block_key(n),at=n.start_byte,shadowed=locally_shadowed(n,txt(fn,raw)),updates=[]))
         if receiver in routers and method in METHODS|{'use'} and url is not None:
             rest=[txt(arg,raw) for arg in args[1:] if arg.type=='identifier']
             if method=='use' and rest:
@@ -223,24 +285,47 @@ def scan_module(path,source,paths,cancel):
             while parent is not None and parent.type in {'await_expression','parenthesized_expression'}:parent=parent.parent
             if parent is not None and parent.type=='variable_declarator':binding=txt(field(parent,'name'),raw)
             requests.append(fact(path,n,receiver=receiver or 'fetch',method=verb,url=url,owners=owners(n,raw),binding=binding,fetch=txt(fn,raw)=='fetch'))
-            requests[-1].update(shadowed=shadowed(n,receiver or 'fetch',raw),binding_scope=block_key(n),at=n.start_byte)
+            requests[-1].update(shadowed=locally_shadowed(n,receiver or 'fetch'),binding_scope=block_key(n),at=n.start_byte)
         if method=='map':renders.append(fact(path,n,state=receiver,owners=owners(n,raw)))
-    for req in requests:
+    setter_calls=defaultdict(list);helper_shadow={}
+    for n in nodes:
+        if n.type=='call_expression':
+            name=txt(field(n,'function'),raw);setter_calls[name].append(n)
+            receiver,_=member(field(n,'function'),raw)
+            key=(n.start_point.row+1,name);helper_shadow[key]=helper_shadow.get(key,False) or locally_shadowed(n,receiver or name)
+    for handler in handlers.values():
+        for helper in handler['helpers']:helper['shadowed']=helper_shadow.get((helper['line'],helper['name']),False)
+        handler['data']=[d for d in handler['data'] if not helper_shadow.get((d['line'],d['operation']),False)]
+    for req in requests+calls:
         req['updates']=[]
         for state in states:
             if not any(o in req['owners'] for o in state['owners']):continue
-            for n in nodes:
+            for n in setter_calls[state['setter']]:
                 if n.type!='call_expression' or txt(field(n,'function'),raw)!=state['setter'] or owners(n,raw)!=req['owners'] or block_key(n)!=req['binding_scope'] or n.start_byte<=req['at']:continue
                 args=arguments(n);value=txt(args[0],raw) if args else ''
                 if req['binding'] and (value==req['binding'] or value.startswith(req['binding']+'.')):
                     req['updates'].append(fact(path,n,state=state['state'],setter=state['setter'],value=value,
                         renders=[r for r in renders if r['state']==state['state'] and any(o in r['owners'] for o in state['owners'])]))
-    return {'path':path,'imports':imports,'exports':exports,'routers':routers,'router_kinds':router_kinds,'clients':clients,'routes':routes,'mounts':mounts,'requests':requests,'handlers':handlers}
+    wrappers={}
+    for n in nodes:
+        if n.type not in FUNCTIONS:continue
+        name=function_name(n,raw)
+        if name=='<callback>':continue
+        body=field(n,'body');returns=[];return_calls=[]
+        if body is not None:
+            if body.type!='statement_block':returns=[txt(body,raw)];return_calls=[c.start_byte for c in walk(body) if c.type=='call_expression']
+            else:
+                for r in walk(body):
+                    if r.type=='return_statement' and owners(r,raw)[:1]==[(name,n.start_point.row+1)]:
+                        returns.append(txt(r.named_children[0],raw) if r.named_children else '')
+                        return_calls.extend(c.start_byte for c in walk(r) if c.type=='call_expression')
+        wrappers[(name,n.start_point.row+1)]={'returns':returns,'return_calls':return_calls,'path':path,'line':n.start_point.row+1,'name':name}
+    return {'path':path,'imports':imports,'exports':exports,'routers':routers,'router_kinds':router_kinds,'clients':clients,'routes':routes,'mounts':mounts,'requests':requests,'handlers':handlers,'calls':calls,'wrappers':wrappers}
 
 
 def analyze_flows(snapshot,cancel=None,progress=lambda value:None):
     paths=set(snapshot.hashes);modules={};warnings=[];total=0
-    root=Path(snapshot.root).resolve()
+    root=Path(snapshot.root).resolve();cache_hits=0
     for path,digest in sorted(snapshot.hashes.items()):
         checkpoint(cancel)
         if language_for(path) not in {'javascript','typescript','tsx'} or digest in {'oversized','unreadable'}:continue
@@ -252,7 +337,7 @@ def analyze_flows(snapshot,cancel=None,progress=lambda value:None):
         if len(raw)>512_000 or total+len(raw)>32_000_000:
             warnings.append('Flow parser size limit: '+path);continue
         total+=len(raw)
-        module=scan_module(path,decode_source(raw,path),paths,cancel)
+        module,hit=cached_module(path,decode_source(raw,path),paths,cancel);cache_hits+=hit
         if module:modules[path]=module
         else:warnings.append('Flow parser skipped syntax errors: '+path)
     progress('Matching client requests to mounted server routes…')
@@ -305,7 +390,10 @@ def analyze_flows(snapshot,cancel=None,progress=lambda value:None):
             for prefix,mounts,complete in prefixes(key):
                 endpoint=prefix.rstrip('/')+'/'+route['url'].lstrip('/')
                 route_rows.append({**route,'endpoint':endpoint,'mounts':mounts,'mount_complete':complete,'handler_detail':handler})
-    flows=[];unresolved_clients=0
+    from .route_adapters import framework_routes
+    additional,adapter_warnings=framework_routes(snapshot,modules,binding,cancel)
+    route_rows.extend(additional);warnings.extend(adapter_warnings)
+    flows=[];unresolved_clients=0;occurrences=defaultdict(int)
     from .polyglot import INFERRED_KINDS
     reverse=defaultdict(list)
     for e in snapshot.edges:
@@ -328,7 +416,8 @@ def analyze_flows(snapshot,cancel=None,progress=lambda value:None):
             matches=[r for r in route_rows if endpoint is not None and r['mount_complete'] and r['method']==req['method'] and compatible(endpoint,r['endpoint'])]
             name=req['owners'][-1][0] if req['owners'] else Path(path).stem
             visible_url=public_url(req['url'])
-            flow={**req,'url':visible_url,'id':hashlib.sha256(f'{path}:{req["line"]}:{req["method"]}:{req["url"]}'.encode()).hexdigest()[:16],
+            stable=(path,tuple(o[0] for o in req['owners']),req['method'],req['url']);occurrences[stable]+=1
+            flow={**req,'url':visible_url,'id':hashlib.sha256(repr((stable,occurrences[stable])).encode()).hexdigest()[:16],
                 'title':name+' · '+req['method']+' '+visible_url,'app':consumer_role(path,snapshot.profile)[0],'consumer_kind':consumer_role(path,snapshot.profile)[1],'endpoint':endpoint,
                 'origin':'Configured client origin is not verified' if config else 'Request origin is not verified',
                 'matches':matches,'status':'path match' if len(matches)==1 else 'ambiguous' if matches else 'unresolved',
@@ -344,10 +433,26 @@ def analyze_flows(snapshot,cancel=None,progress=lambda value:None):
             if len(matches)>1:flow['notes'].append('Multiple server routes match this method and path; none was selected as the runtime destination.')
             if endpoint is None:flow['notes'].append('The URL path depends on a dynamic prefix; no endpoint match was guessed.')
             flows.append(flow)
-    return {'version':1,'flows':flows,'routes':route_rows,'limits':LIMITS,'warnings':warnings,
+    from .flow_evidence import enrich_flows
+    enrich_flows(flows,modules,binding,snapshot,cancel)
+    matched={(m['path'],m['line'],m['method'],m['endpoint']) for f in flows for m in f['matches']}
+    server_flows=[]
+    for route in route_rows:
+        if not route['mount_complete'] or (route['path'],route['line'],route['method'],route['endpoint']) in matched:continue
+        server_flows.append({'id':hashlib.sha256(('server:'+route['path']+route['method']+route['endpoint']).encode()).hexdigest()[:16],
+            'entry_kind':'server','path':route['path'],'line':route['line'],'owners':[],'method':route['method'],'url':route['endpoint'],'endpoint':route['endpoint'],
+            'title':route['method']+' '+route['endpoint']+' · registered endpoint','app':str(Path(route['path']).parent),'consumer_kind':'Server route registration',
+            'origin':'Source registration; no runtime client connection asserted','matches':[route],'status':'registered','notes':['No supported client request was linked to this registration.'],
+            'updates':[],'callers':[]})
+    enrich_flows(server_flows,modules,binding,snapshot,cancel)
+    return {'version':2,'snapshot_id':snapshot.id,'flows':flows,'server_flows':server_flows,'routes':route_rows,'limits':LIMITS,'warnings':warnings,'cache_hits':cache_hits,
             'summary':{'requests':len(flows),'path_matches':sum(f['status']=='path match' for f in flows),
                 'unresolved':sum(f['status']=='unresolved' for f in flows),'ambiguous':sum(f['status']=='ambiguous' for f in flows),'server_routes':len(route_rows),
-                'analyzed_modules':len(modules),'skipped_files':len(warnings)}}
+                'analyzed_modules':len(modules),'skipped_files':sum(w.startswith('Flow parser ') for w in warnings)},
+            'adapters':['Express','Next.js App Router','FastAPI direct application routes','Flask direct application routes']}
+
+
+def flow_entries(analysis):return analysis.get('flows',[])+analysis.get('server_flows',[])
 
 
 def compatible(client,server):
@@ -362,6 +467,7 @@ def app_name(path):
 
 
 def consumer_role(path,profile):
+    if '/app/' in '/'+path and Path(path).stem=='route':return str(Path(path).parent),'Server HTTP consumer (Next route source)'
     packages=[]
     for manifest,data in profile.get('manifests',{}).items():
         if not manifest.endswith('package.json') or not isinstance(data,dict):continue
@@ -377,6 +483,9 @@ def consumer_role(path,profile):
 
 def design_model(report,flow=None):
     """Editable HLD systems or a branching request/response implementation view."""
+    if flow is None and report.get('modules'):
+        from .system_overview import overview_model
+        return overview_model(report)
     nodes=[];edges=[];analysis=report.get('feature_flows',{})
     def node(key,title,kind,path='',line=1,facts=(),column=0,row=0):
         nodes.append({'id':key,'title':title,'kind':kind,'path':path,'line':line,'fields':[],
@@ -402,7 +511,7 @@ def design_model(report,flow=None):
                     edge(key,data_key,'model operations','source association')
         if not nodes:node('unknown','No supported request flow extracted','Coverage gap',facts=['Code structure is available separately.','No system flow was invented for this framework.'])
     else:
-        request=node('request',flow['owners'][-1][0] if flow['owners'] else 'Client request','Client request',flow['path'],flow['line'],
+        request=node('request',flow['owners'][-1][0] if flow['owners'] else 'Registered endpoint' if flow.get('entry_kind')=='server' else 'Client request','Server entry point' if flow.get('entry_kind')=='server' else 'Client request',flow['path'],flow['line'],
             [flow['method']+' '+flow['url'],flow['origin']],0,0)
         for i,caller in enumerate(flow.get('callers',[])[:3]):
             key='caller'+str(i);node(key,caller['name'],'Source caller',caller['path'],caller['line'],['References the request wrapper at this line.','Runtime ordering / data propagation not established.'],0,i+3)
@@ -410,7 +519,7 @@ def design_model(report,flow=None):
         for i,match in enumerate(flow['matches'][:4]):
             r=node('route'+str(i),match['method']+' '+match['endpoint'],'Route candidate',match['path'],match['line'],
                 ['Mount '+m['prefix']+' · '+(', '.join(m['middleware']) or 'no named middleware') for m in match['mounts']]+['Route middleware: '+(', '.join(match['middleware']) or 'none recorded')],1,i*2)
-            edge(request,r,'path match','path match')
+            edge(request,r,'source registration' if flow.get('entry_kind')=='server' else 'path match','resolved static' if flow.get('entry_kind')=='server' else 'path match')
             h=match['handler_detail'];key='handler'+str(i)
             if h:
                 info=['Input: '+', '.join(h['inputs'])] if h['inputs'] else ['Input field extraction unresolved']
@@ -418,6 +527,12 @@ def design_model(report,flow=None):
                 info += [c['description'] for c in h['conditions'][:5]]
                 info += ['Helper call: '+v['name']+'(…)' for v in h.get('helpers',[])[:4]]
                 node(key,h['name'],'Handler logic',h['path'],h['line'],info,2,i*2);edge(r,key,'handler','resolved static')
+                for j,helper in enumerate(match.get('service_helpers',[])[:12]):
+                    helperkey=key+':helper'+str(j)
+                    node(helperkey,helper['name'],'Service helper',helper['path'],helper['line'],
+                        [d['operation']+' · filter fields: '+', '.join(d['filter_fields']) for d in helper['data']]+[c['description'] for c in helper['conditions']],3,j+i*2)
+                    parent=next((n['id'] for n in nodes if n['path']==helper['call_site']['path'] and n['title']==helper['caller_name']),key)
+                    edge(parent,helperkey,'service call','resolved static')
                 for k,data in enumerate(h['data'][:3]):
                     data_key=key+':data'+str(k)
                     node(data_key,Path(data['model_path']).stem,'Data operation',data['model_path'],1,
@@ -445,6 +560,19 @@ def design_model(report,flow=None):
         if not flow['updates']:
             node('ui-unknown','UI response handling unresolved','Coverage gap',flow['path'],flow['line'],['No direct request-result → state setter was resolved.','A service wrapper or another state mechanism may be involved.'],0,1)
             edge(request,'ui-unknown','Not inferred from proximity','inferred')
+        for i,call in enumerate(flow.get('service_chain',[])[:12]):
+            key='service-call'+str(i);node(key,call['name'],'Request service call',call['path'],call['line'],['Explicit wrapper return; direct result propagation'],0,i+5)
+            edge(key,request,'calls request wrapper','resolved static')
+        for i,gap in enumerate([g for g in flow.get('gaps',[]) if g not in flow['notes']][:12]):
+            node('gap'+str(i),'Unresolved step','Coverage gap',flow['path'],flow['line'],[gap],4,i)
+        remaining=max(0,len(flow['matches'])-4)+sum(max(0,len(m.get('service_helpers',[]))-12) for m in flow['matches'][:4])
+        if remaining:node('continuation',str(remaining)+' additional details','Continuation',flow['path'],flow['line'],['Full evidence is retained in report.json and flows.md.'],4,13)
+        # Attach the same structured witnesses exported in JSON to editable cards.
+        for n in nodes:
+            n['evidence']=[s for s in flow.get('steps',[]) if s['source']=={'path':n['path'],'line':n['line']}]
+        for e in edges:
+            target=next((n for n in nodes if n['id']==e['to']),{})
+            e['evidence']=target.get('evidence',[])
     heights={}
     for n in sorted(nodes,key=lambda n:(n['x'],n['y'])):
         n['y']=max(n['y'],heights.get(n['x'],0));heights[n['x']]=n['y']+card_height(n)+65
@@ -487,7 +615,7 @@ def flows_markdown(report):
         'Snapshot: `'+report['snapshot_id']+'`','',
         '![System overview](systems.svg)','',
         'Method/path matches are candidates; host configuration and runtime dispatch have not been verified.','']
-    for flow in analysis.get('flows',[]):
+    for flow in flow_entries(analysis):
         lines+=['## '+flow['title'].replace('<','&lt;'),'',flow['path']+':'+str(flow['line'])+' · '+flow['status'],'',
             '[Implementation flow](flows/'+flow['id']+'.svg)','']
         for match in flow['matches']:
@@ -502,6 +630,8 @@ def flows_markdown(report):
         for update in flow['updates']:
             lines+=['- Client update: '+update['value']+' → '+update['setter']+' at '+update['path']+':'+str(update['line'])]
             for render in update['renders']:lines+=['- Rendering: '+render['state']+'.map at '+render['path']+':'+str(render['line'])]
-        lines+=['- '+note for note in flow['notes']]+['']
+        for step in flow.get('steps',[]):
+            source=step['source'];lines+=['- '+step['kind']+': '+step['label']+' at '+str(source['path'])+':'+str(source['line'])]
+        lines+=['- Gap: '+note for note in flow.get('gaps',flow['notes'])]+['']
     lines+=['## Coverage limits','']+['- '+line for line in analysis.get('limits',LIMITS)]
     return '\n'.join(lines)+'\n'

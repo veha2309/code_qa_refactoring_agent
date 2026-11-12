@@ -11,12 +11,18 @@ class ArchitectureView(QWidget):
     generateRequested=Signal()
     exportRequested=Signal()
     codeRequested=Signal(str,int)
+    modelReviewRequested=Signal()
+    lldReviewRequested=Signal()
 
     def __init__(self,parent=None):
         super().__init__(parent);self.report=None
         col=QVBoxLayout(self);col.setContentsMargins(0,0,0,0);col.setSpacing(12)
         row=QHBoxLayout();title=QLabel('Architecture');title.setObjectName('lensTitle');self.heading_title=title;row.addWidget(title,1)
         self.generate=QPushButton('Review project');self.generate.clicked.connect(self.generateRequested.emit);row.addWidget(self.generate)
+        self.model_review=QPushButton('Model findings');self.model_review.setToolTip('Review a bounded sample of project sources with the optional local model.');self.model_review.setEnabled(False);self.model_review.clicked.connect(self.modelReviewRequested.emit);row.addWidget(self.model_review)
+        self.lld_review=QPushButton('Suggest LLD notes…')
+        self.lld_review.setToolTip('Use Ollama to explain the selected card or the visible LLD page from saved source.')
+        self.lld_review.clicked.connect(self.lldReviewRequested.emit);row.addWidget(self.lld_review)
         self.export=QPushButton('Export report + diagrams');self.export.setEnabled(False);self.export.clicked.connect(self.exportRequested.emit);row.addWidget(self.export);col.addLayout(row)
         self.status=QLabel('Open a project, then review its saved source. No project code will be executed.');self.status.setWordWrap(True);self.status.setObjectName('muted');col.addWidget(self.status)
         self.tabs=QTabWidget();col.addWidget(self.tabs,1)
@@ -28,7 +34,7 @@ class ArchitectureView(QWidget):
         self.declarations.itemActivated.connect(self.open_item);self.tabs.addTab(self.declarations,'Code inventory')
         self.dependencies=QTreeWidget();self.dependencies.setHeaderLabels(['Caller file → dependency','Evidence / classification']);self.dependencies.setColumnWidth(0,540);self.dependencies.header().setSectionResizeMode(1,QHeaderView.ResizeMode.Stretch)
         self.dependencies.itemActivated.connect(self.open_item);self.tabs.addTab(self.dependencies,'Dependencies')
-        diagram=QWidget();dc=QVBoxLayout(diagram);dc.setContentsMargins(0,0,0,0)
+        diagram=QWidget();self.structure=diagram;dc=QVBoxLayout(diagram);dc.setContentsMargins(0,0,0,0)
         self.diagram_controls=QWidget();controls=QHBoxLayout(self.diagram_controls);controls.setContentsMargins(0,0,0,0)
         self.diagram_choice=QComboBox();self.diagram_choice.addItems(['Package dependencies','Declarations & members']);self.diagram_choice.currentIndexChanged.connect(self.configure_diagrams);controls.addWidget(self.diagram_choice)
         self.scope=QComboBox();self.scope.setMinimumWidth(230);self.scope.currentIndexChanged.connect(self.configure_pages);controls.addWidget(self.scope,1)
@@ -49,7 +55,16 @@ class ArchitectureView(QWidget):
         self.coverage_kind=QComboBox();self.coverage_kind.currentIndexChanged.connect(self.populate_coverage);filters.addWidget(self.coverage_kind);cv.addLayout(filters)
         self.coverage_rows=QTreeWidget();self.coverage_rows.setHeaderLabels(['Analysis coverage','Occurrences / files','Examples · source locations']);self.coverage_rows.setColumnWidth(0,410);self.coverage_rows.setColumnWidth(1,170);self.coverage_rows.header().setSectionResizeMode(2,QHeaderView.ResizeMode.Stretch);self.coverage_rows.itemActivated.connect(self.open_item);cv.addWidget(self.coverage_rows,1);self.tabs.addTab(coverage,'Analysis coverage')
         self.diagram_zoom=1.
+        self.tabs.currentChanged.connect(self.update_model_actions)
+        self.canvas.changed.connect(self.update_model_actions)
+        self.flows.canvas.changed.connect(self.update_model_actions)
         self.tabs.setCurrentIndex(3)
+
+    def update_model_actions(self, *_):
+        self.model_review.setVisible(self.tabs.currentIndex()==0)
+        canvas = self.active_canvas()
+        self.lld_review.setVisible(self.tabs.currentWidget() in (self.structure, self.flows)
+                                   and (canvas.model or {}).get('level') == 'LLD')
 
     def set_tools_visible(self,show):
         for widget in (self.heading_title,self.generate,self.export,self.status,self.diagram_note,self.canvas.notice):widget.setVisible(show)
@@ -63,11 +78,12 @@ class ArchitectureView(QWidget):
         if not self.report:return
         from .feature_flows import design_model
         key=self.flows.key[1] if self.flows.key else 'systems'
-        flow=next((f for f in self.report.get('feature_flows',{}).get('flows',[]) if f['id']==key),None)
+        flow=self.flows.by_id.get(key)
         model=design_model(self.report,flow)
         self.flows.canvas.transaction('Reset flow to source',lambda value:(value.clear(),value.update(model)))
 
     def clear_report(self):
+        self.model_review.setEnabled(False)
         self.report=None;self.export.setEnabled(False);self.declarations.clear();self.dependencies.clear();self.design_key=None;self.canvas.set_model(None);self.canvas.expected_snapshot=''
         self.diagram.load(QByteArray(b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>'))
         self.overview.setPlainText('## Architecture and implementation LLD\n\nOpen this view to review the current project, or choose Review project to refresh saved-source evidence.')
@@ -80,6 +96,7 @@ class ArchitectureView(QWidget):
         if data:self.codeRequested.emit(data[0],data[1])
 
     def set_report(self,report):
+        self.model_review.setEnabled(True)
         from .design_diagrams import prepare_diagrams
         report=prepare_diagrams(report)
         self.report=report;self.export.setEnabled(True);summary=report['summary']
@@ -105,7 +122,7 @@ class ArchitectureView(QWidget):
             self.status.setText(self.status.text()+' · Preview capped at 2,000 declarations / 500 dependencies; export contains all records')
         self.configure_diagrams()
         self.flows.set_report(report)
-        if report.get('feature_flows',{}).get('flows'):self.tabs.setCurrentWidget(self.flows)
+        if self.flows.by_id:self.tabs.setCurrentWidget(self.flows)
 
     def populate_review(self):
         from .review_quality import build_review

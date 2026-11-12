@@ -1,5 +1,6 @@
 """Conservative context packing. Large rewrites use exact visible snippet edits."""
 import math
+import re
 
 
 def estimate_tokens(text):
@@ -37,3 +38,81 @@ def snippet_edits(code,visible,edits):
     if any(a[1]>b[0] for a,b in zip(changes,changes[1:])):raise ValueError('Snippet edits overlap.')
     for start,end,new in reversed(changes):code=code[:start]+new+code[end:]
     return code
+
+
+def related_context(snapshot,symbol,analysis=None,budget=768):
+    """Pack referenced definitions before callers, tests and broad type context."""
+    if symbol is None or budget < 72:
+        return ''
+    from .context_evidence import context_files, definition_fragments, saved_source
+
+    names = set(re.findall(r'[^\W\d]\w*', symbol.source))
+    related = {}
+    records = []
+    seen = set()
+
+    def add(rank, path, start, end, label, source):
+        key = path, start, end, source.strip()
+        if key in seen or not source.strip():
+            return
+        seen.add(key)
+        fragment = fit_text(source.strip(), 135)
+        location = f'{path}:{start}' + (f'–{end}' if end != start else '')
+        qualifier = ' (partial)' if fragment != source.strip() else ''
+        records.append((rank, f'{location} [{label}]{qualifier}\n{fragment}'))
+
+    for edge in snapshot.edges:
+        outgoing = edge['caller'] == symbol.id
+        if outgoing or edge['callee'] == symbol.id:
+            sid = edge['callee'] if outgoing else edge['caller']
+            if sid == symbol.id:
+                continue
+            rank = 1 if outgoing else 5
+            previous = related.get(sid)
+            if previous is None or rank < previous[0]:
+                related[sid] = rank, edge['kind']
+
+    linked = context_files(snapshot, symbol, names, snapshot.edges)
+    dependency_paths = list(linked)[:8]
+    omitted = len(linked) - len(dependency_paths)
+    for path in [*dependency_paths, symbol.path]:
+        label, wanted = linked.get(path, ('same-file declaration', names))
+        source = saved_source(snapshot, path)
+        if source is None:
+            omitted += 1
+            continue
+        for start, end, fragment in definition_fragments(path, source, wanted):
+            if path == symbol.path and symbol.start <= start and end <= symbol.end:
+                continue
+            add(0 if path != symbol.path else 2, path, start, end, label, fragment)
+
+    for sid,s in snapshot.symbols.items():
+        if sid == symbol.id or s.kind == 'module':
+            continue
+        if sid in related:
+            rank, label = related[sid]
+            add(6 if s.is_test else rank, s.path, s.start, s.end, label, s.source)
+        elif s.path in dependency_paths and s.name in linked[s.path][1] and not s.is_test:
+            add(3 if s.kind != 'class' else 5, s.path, s.start, s.end,
+                'matching declaration, ' + linked[s.path][0], s.source)
+        elif s.path == symbol.path and s.kind == 'class':
+            add(6, s.path, s.start, s.end, 'same-file type', s.source)
+
+    unresolved = [warning for warning in snapshot.warnings
+                  if warning.startswith('Unresolved local module ') and f' imported by {symbol.path}:' in warning]
+    records.extend((4, warning) for warning in unresolved[:2])
+    omitted += max(0, len(unresolved) - 2)
+    for flow in (analysis or {}).get('flows',[])+(analysis or {}).get('server_flows',[]):
+        matched=[s for s in flow.get('steps',[]) if s['source']['path']==symbol.path and symbol.start<=s['source']['line']<=symbol.end]
+        if matched:
+            records.append((4, 'Feature: '+flow.get('screen',flow['title'])+' / '+flow['method']+' '+flow['url']+' (candidate route)'))
+
+    rows = ['Related saved-source excerpts. Static links may be incomplete.']
+    footer = 'Omitted context records: {}.'
+    reserved_footer = footer.format(omitted + len(records))
+    for _, chunk in sorted(records, key=lambda record: record[0]):
+        if estimate_tokens('\n\n'.join([*rows, chunk, reserved_footer])) <= budget:
+            rows.append(chunk)
+        else:
+            omitted += 1
+    return '\n\n'.join([*rows, footer.format(omitted)])

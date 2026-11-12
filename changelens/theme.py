@@ -21,6 +21,7 @@ QLabel#hero,QLabel#emptyTitle { color:#d5e6e0; font-size:26px; padding-bottom:12
 QLabel#welcomeText { color:#9aafb4; padding-bottom:18px; }
 QFrame#welcome { background:transparent; border:none; }
 QFrame#inspector,QFrame#lensEvidence { background:rgba(26,42,48,225); border:1px solid rgba(172,211,208,36); border-top-color:rgba(203,232,226,60); border-radius:6px; }
+QFrame#inlineRefactor { background:#202b32; border:1px solid #63837e; border-radius:6px; }
 QFrame#metricCard { background:rgba(34,51,58,130); border:1px solid rgba(175,211,205,24); border-radius:5px; }
 QLabel#metricValue { color:#c6e4d8; font-size:20px; }
 QPushButton,QPushButton#primary { background:rgba(61,84,89,90); color:#d6e5e3; border:1px solid rgba(180,217,210,48); border-radius:4px; padding:7px 12px; }
@@ -50,6 +51,7 @@ QListWidget#outline,QListWidget#ideas { background:transparent; border:none; }
 QHeaderView::section { background:#1c2c34; color:#a9c0c4; padding:9px; border:none; border-bottom:1px solid #34464c; }
 QPlainTextEdit { background:#191e25; color:#d2dfe1; border:1px solid rgba(163,196,202,22); border-radius:4px; padding:10px 12px; font-family:"Roboto Mono"; font-size:14px; selection-background-color:#33574f; }
 QPlainTextEdit#terminal { background:#101b20; color:#bfd9cb; }
+QPlainTextEdit#qaFindingBody { font-family:"Noto Sans"; }
 QTabWidget::pane { border:none; }
 QTabBar::tab { background:rgba(17,29,36,130); color:#90a9b1; padding:9px 18px; border:1px solid transparent; border-top-left-radius:8px; border-top-right-radius:8px; }
 QTabBar::tab:selected { background:#191e25; color:#d4e8df; border:1px solid rgba(170,214,198,30); border-bottom:none; }

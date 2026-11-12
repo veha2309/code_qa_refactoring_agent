@@ -4,19 +4,46 @@ Change Lens is a native Windows workspace for investigating changes across suppo
 
 ## Start
 
-The latest executable is `dist\locked3d\ChangeLens\ChangeLens.exe`; older builds remain in `dist\review`, `dist\interaction`, `dist\flows`, `dist\proposals`, `dist\navigation`, `dist\automatic`, `dist\refined` and `dist\ChangeLens`. Keep the whole ChangeLens folder together. The build is unsigned and has no installer. Standard source builds through `scripts\build.ps1` write to `dist\ChangeLens`.
+To open the current workspace version, double-click **Start Change Lens.cmd** after setup. The
+executables under `dist` reflect the source at the time they were built. Standard source builds
+through `scripts\build.ps1` write to `dist\ChangeLens`.
 
 Local rewrite proposals use a JSON schema requiring `code` and `explanation`. Large declarations instead request bounded exact snippet edits, which are assembled locally. An invalid response receives one corrective retry with the same source excerpt. If it still fails, Refactor shows the error and leaves Apply disabled. Syntax, signature and freshness checks still run before a preview is accepted; this does not prove unchanged behavior.
 
 For development, run `powershell -ExecutionPolicy Bypass -File scripts\setup.ps1`, then double-click `Start Change Lens.cmd` or run `.\.venv\Scripts\python.exe launcher.py`. Setup downloads free dependencies; normal editing, completion, refactoring and analysis run offline.
 
-The top row keeps **Lens, Editor, Changes, Tests, Refactor, Notes, and Design** visible for one-click switching. **Open, Files, Find** and the current view's primary actions are also visible. **More** contains advanced settings and less-used commands. HLD/LLD selectors and design editing controls stay visible; selecting a card reveals its inspector. The large decorative header remains removed, so most of the window is still workspace.
+The top row keeps **Review, Tests, Refactor, Editor, Lens, Changes, and Design** visible. **More** contains code notes and advanced settings.
 
 ## Everyday workflow
 
+**Review** opens with the saved comparison. On a clean project, use **Choose function…** or open
+code in **Editor** and review the current function or file. Select a review item to see why it matters
+and what you can do next. **Open code** takes you to the line. **Open saved diff** shows removed code.
+**Lens** shows which code uses the reviewed function.
+
+**Look for possible bugs** uses optional local Ollama. **Show source quotes** reveals the exact
+code behind a suggestion. Use **Preview fix** on a possible bug inside a function to see a
+proposed edit. Compare **Current code** and **Proposed edit** before choosing **Apply this fix**, then run the linked tests.
+The Review screen keeps those tests available even if the fix restores the previous version.
+
+In **Editor**, click a name to rename it, or select code to choose **Extract function** or
+**Extract constant** (**Extract variable** in Python). Rename and extract work in Python,
+JavaScript, JSX, TypeScript, and TSX. If there are unsaved changes in the file, use **Save file and
+keep selection** in the panel. The file picker shows each affected diff, and you can apply or undo
+the change while the editor stays open. Press Escape to close the panel.
+
+In **Refactor**, start with **Try a sample rename** to see a real preview in a practice copy,
+or choose **Choose function…** to work on your project. For Python, the picker places the cursor on
+the function name so you can enter a new name and press Enter. The editor panel is the quickest
+way to rename or extract in JavaScript and TypeScript. The TypeScript engine is prepared by setup
+and runs locally. The **Improve** action uses the optional local AI model.
+
+When the preview has runnable linked tests, **Apply and run linked tests** applies the patch and
+opens the results in Tests. **Undo applied patch** checks for intervening edits before restoring the files.
+
 1. **Open a folder.** Indexing and comparison setup happen automatically. Git projects use their latest commit. Other folders get a comparison point on their first open, preserved across sessions. Edits made before that first recording cannot be recovered.
 2. **Edit and save.** Checks refresh after a short pause without switching away from your code. Detected external file changes refresh checks too; clean open buffers reload, while unsaved buffers are preserved.
-3. **Check changes.** The Lens shows paths from a focused change to affected code and tests. Click a node to highlight its path and open the evidence drawer. **Read diffs** opens saved edits; **Run linked tests** selects tests for the focused path. Test execution still requires an explicit action and initial repository trust.
+3. **Check changes.** The Lens shows paths from a focused change to affected code and tests. Click a node to highlight its path and open the evidence drawer. **Saved diffs…** opens the saved edits in a separate window. **Linked tests…** opens the selection for the focused path. Choose **Run selected tests** to execute them after granting repository trust.
 
 With no recorded edits, the Lens automatically explores a function and clearly labels that state. The function picker changes focus without another setup step. **Fit map** fits the graph; drag to pan, scroll to explore and Ctrl+wheel to zoom. Large maps show at most 36 nodes and disclose the omitted count. The complete impact table remains under **Evidence table**. Solid links are resolved static references; dashed links contain inferred or historical references. Neither establishes that a test will fail.
 
@@ -34,7 +61,7 @@ Use Ctrl+Shift+P → **Project: Open web sample** for an editable React/TSX + Ja
 
 JS/TS tests run through Node or an already installed Jest/Vitest after repository trust. **All tests in selected files may run**; Vitest path filters may also match additional files. The app does not install dependencies or invoke npm scripts. Select tests from one package and one execution family at a time. Other new languages offer recommendations only. Static framework declarations do not guarantee test tool availability.
 
-Inline local AI completion and focused explanations accept these source languages. Jedi completion/F12 and structural rename/extract remain Python-only. Reviewed AI rewrites now support all indexed source languages, including Dart. Non-Python tests use structural ranking because the learned starter model has only Python training examples.
+Inline local AI completion and focused explanations accept these source languages. Jedi completion and F12 support Python. Rename and extract also support JavaScript and TypeScript through the TypeScript language service. Reviewed AI rewrites support all indexed source languages, including Dart. Non-Python tests use structural ranking because the learned starter model has only Python training examples.
 
 ## Local coding AI for the presentation laptop
 
@@ -45,6 +72,8 @@ Install and start [Ollama for Windows](https://ollama.com/download/windows) once
 After pausing at the end of a line, generated code appears in muted text. **Tab** accepts it as one undoable edit; **Escape** dismisses it; **Ctrl+Enter** requests a completion. **Ctrl+Space** remains Jedi name/attribute completion. Suggestions are discarded if you change the source or cursor before the response arrives. Model loading can make the first request much slower than warm requests; loading happens in a background worker.
 
 In **Brief**, use **Explain focused code** or **Suggest a change**. Unfocused whole-file summaries are avoided; choose a function or a selected fragment. Markdown is rendered as readable text, with HTML, image/resource loading and link navigation disabled. Model interpretation remains separate from recorded evidence. A generated rewrite must preserve the function signature and decorators, pass syntax validation, and contain no new imports. It opens as a diff and only writes source after **Apply reviewed patch**, with the existing backup and freshness checks. These checks do not establish semantic equivalence. The fixed 3,500-character cap has been removed. Functions/fragments are packed against a token estimate and output reserve. Oversized rewrites use exact snippet edits against a disclosed cursor-centred excerpt; omitted source is assembled locally and then validated. This does not establish understanding of omitted code or repository-wide behavior.
+
+Focused model requests can include nearby declarations and definitions from indexed local files, such as an imported page-size limit. Change Lens labels the excerpts with file and line information and puts matching definitions ahead of callers, tests, and broad type context. **Explain focused code** and **Review focused code** ask the model to name missing definitions or settings in **Still uncertain** when they affect the answer. Imports, package links, and identifier matches are static evidence, so inspect the cited source before relying on a conclusion.
 
 On the actual presentation laptop, click **Brief → Model settings → Check presentation readiness**. This measures three completions locally without executing generated code and saves a report under application data. No development tools are needed for this check. A command is also available for source development:
 
@@ -64,7 +93,7 @@ The existing scratch-trained logistic model still ranks tests. The optional codi
 
 The editor supports Python, JS/JSX, TS/TSX, Java, C#, Go, Rust, Dart and common text/config files up to 2 MB. The analysis engine supports Python syntax understood by the bundled Python 3.10 runtime; unsupported syntax is reported.
 
-**Ctrl+P** searches project files. **Ctrl+Shift+P** opens the searchable command palette; use Up/Down and Enter to choose a command. **Ctrl+B** toggles the file panel. **Ctrl+Shift+O** opens the optional outline. The workspace tabs above the content open Lens, Editor, Changes, Tests, Refactor and Brief. The evidence table and diagnostics remain in the View menu and command palette. **Ctrl+1** returns to the editor with open files and cursor positions preserved.
+**Ctrl+P** searches project files. **Ctrl+Shift+P** opens the command palette. Use Up/Down and Enter to choose a command. **Ctrl+B** toggles the file panel. **Ctrl+Shift+O** opens the optional outline. The main workspace tabs are Editor, Lens, Review and Design. **More → Tools** opens Saved changes, Tests, Refactor or Code notes in a separate window. **F2** opens the rename preview from the current workspace. **Ctrl+1** returns to the editor with open files and cursor positions preserved.
 
 The editor uses indentation from the file. Tab moves to the next indent stop, Shift+Tab unindents selected lines, and Backspace removes one indent step in leading whitespace. Home toggles between the first non-whitespace character and column zero; Shift+Home selects to that position.
 
@@ -101,7 +130,7 @@ Symbol analysis uses the cursor location against freshly indexed source, so inse
 
 **Tests** selects candidates with dependency paths rather than filling an arbitrary top-five list. Resolved paths rank before inferred paths; name-only and weak matches require manual selection through **Include name-only / weak matches**. Scores rank tests within their evidence groups and are not calibrated confidence values. The active model or structural fallback is shown above the list. Click a test for its full source-to-test evidence path, including filenames and line numbers. Manual selections survive filter changes until the next analysis.
 
-Editing indexed source or configuration marks existing results and previews out of date. Saving refreshes checks automatically; typing a refactoring name refreshes its preview. Source hash checks also reject disk changes before execution or patch application. Native filesystem monitoring observes indexed files and up to 2,048 non-excluded directories. Use **Check changes** after unobserved changes, including Git metadata outside the opened folder in some worktrees. JSON and Markdown reports distinguish recommended tests, unlinked candidates, actual selected-test outcomes and checks not performed.
+Editing indexed source or configuration marks results and previews out of date. Actual saves queue a background check. Repeated Save commands on a clean buffer do not start analysis. Filesystem notifications are combined, and a check can reuse the index when the source hashes, repository revision and project profile still match. Checks stay in the current workspace. Source hash checks also reject disk changes before execution or patch application. Use **Check changes** after unobserved changes, including Git metadata outside the opened folder in some worktrees. JSON and Markdown reports distinguish recommended tests, unlinked candidates, actual selected-test outcomes and checks not performed.
 
 No resolved test path is a possible linkage gap, not proof that coverage is absent. Module-level edits conservatively include symbols in the affected Python file.
 
@@ -262,3 +291,21 @@ This handles large source files through focused context; it does not increase th
 The menu-only layout has been replaced. Use the visible workspace buttons to switch views directly. Editor exposes Save and Review edits; Lens exposes Check and Fit; Refactor exposes Preview and Apply; Tests exposes Run tests; Design exposes Review and Export. Button availability follows current file, patch and worker state. More retains advanced controls, model context settings, command menus and uncommon tools. Files is a visible checked toggle, and Find opens file search. Ordinary operation no longer requires expanding a menu.
 
 Design has visible review tabs, HLD/LLD and package/page selectors, and its editing toolbar. Applied property edits and Undo/Redo keep the relevant card selected when it still exists, so the inspector can be used continuously. Existing hunk reverts, saved history, context handling and diagram exports are unchanged.
+
+## CMS feature workflow
+
+In Lens, choose **Explore a feature**, **Review my changes**, or **Improve selected code**. In Design, search an application, screen, endpoint or source helper. Use **Implementation detail** for typed source evidence and **Back / Forward** to retrace navigation. Saved changes expose a potentially affected feature selector in Lens. Diagram annotations persist locally; source refresh marks affected annotations for review. **Reset to source** removes these corrections. Applying code still requires a reviewed proposal; use Editor review/history to revert. See evaluation/CMS_WORKFLOW.md for supported patterns and measured limitations.
+
+## Panning in Design
+
+Drag empty canvas space to pan in both Code structure and System & feature flows. Use middle-button drag or hold Space while dragging to pan over cards. The Pan toolbar button enables left-drag panning over cards as well; toggle it off to move cards. Shift+drag on the background box-selects cards. Ordinary wheel or trackpad movement scrolls; Shift+wheel moves horizontally; Ctrl+wheel zooms around the pointer. Panning keeps card positions, selection and Undo history intact.
+
+## Multi-project model findings and Design
+
+Design opens a source module overview for every indexed language. Express, Next App Router, direct FastAPI and direct Flask route registrations add searchable endpoint entries, including endpoints with no linked client. Pan is enabled by default: drag anywhere to navigate, click a card to inspect it, or turn Pan off to move cards.
+
+Use Notes → Review focused code for local-model findings, or Design → Review → Model findings for a bounded sample of project declarations. On a declarations-and-members page or a feature implementation diagram, choose **Suggest LLD notes…**. Select one source card to focus the review on that card and related evidence, or clear the selection to review the visible page. The Ollama model proposes explanations of responsibilities, contracts, state changes, and branches. Preview the interpretation alongside its verified saved-source quotes and choose **Add notes to diagram** to keep it as an undoable draft card. Draft notes are included in **Save design** and **Export SVG** from the canvas. Other indexed languages default to model refactoring in Refactor; structural rename/extract requires its own language engine. See evaluation/MULTI_PROJECT_REPAIR.md for coverage and the Hydro Nexus/StockPulse checks.
+
+## Installed Ollama models
+
+The app checks for prepared local models automatically on startup. Review and model-refactoring actions reconnect and continue automatically if needed. No model is downloaded or loaded just to discover availability. Notes shows the current source language; Refactor accepts an optional improvement goal. All indexed languages use the local coding model, while structural rename/extract remains a separate language-engine capability. See evaluation/OLLAMA_INTEGRATION.md for live UI verification and limitations.

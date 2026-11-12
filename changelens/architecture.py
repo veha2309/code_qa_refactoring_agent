@@ -184,7 +184,7 @@ def review_architecture(snapshot, cancel=None, progress=lambda value:None):
                              'locations':[f'{row["path"]}:{row["start"]}'],'evidence':[sid]})
     progress('Preparing architecture diagrams…');checkpoint(cancel)
     record={'schema_version':2,'snapshot_id':snapshot.id,'revision':snapshot.revision,'hashes':dict(snapshot.hashes),
-            'project':Path(snapshot.root).name,'generated_utc':datetime.now(timezone.utc).isoformat(),
+            'project':Path(snapshot.root).name,'workspace_id':hashlib.sha256(str(Path(snapshot.root).resolve()).casefold().encode()).hexdigest(),'generated_utc':datetime.now(timezone.utc).isoformat(),
             'modules':list(modules.values()),'symbols':list(symbols.values()),'relationships':links,
             'dependencies':dependencies,'findings':findings,'warnings':list(snapshot.warnings)+import_warnings,
             'framework_hints':snapshot.profile.get('frameworks',[]),'capabilities':snapshot.profile.get('capabilities',{}),
@@ -231,7 +231,8 @@ def export_bundle(report, snapshot, destination, cancel=None):
     if snapshot.id!=report['snapshot_id'] or revision(Path(snapshot.root))!=report['revision'] or fingerprint(Path(snapshot.root),cancel)!=report['hashes']:
         raise ValueError('Project changed. Generate a fresh architecture review before exporting.')
     md=report_markdown(report);architecture=diagram_svg(report);lld=diagram_svg(report,True)
-    flow_rows=report.get('feature_flows',{}).get('flows',[])
+    from .feature_flows import flow_entries
+    flow_rows=flow_entries(report.get('feature_flows',{}))
     if flow_rows:
         from .feature_flows import design_model,model_svg
         architecture=model_svg(design_model(report))
@@ -248,12 +249,12 @@ def export_bundle(report, snapshot, destination, cancel=None):
     (root/'lld-index.md').write_text(diagram_index,encoding='utf-8')
     (root/'lld').mkdir()
     for name,svg in pages.items():(root/'lld'/name).write_text(svg,encoding='utf-8')
-    if report.get('feature_flows',{}).get('flows'):
+    if report.get('feature_flows',{}):
         from .feature_flows import design_model,model_svg,flows_markdown
         (root/'systems.svg').write_text(model_svg(design_model(report)),encoding='utf-8')
         (root/'flows.md').write_text(flows_markdown(report),encoding='utf-8')
         (root/'flows').mkdir()
-        for flow in report['feature_flows']['flows']:
+        for flow in flow_entries(report['feature_flows']):
             checkpoint(cancel)
             (root/'flows'/(flow['id']+'.svg')).write_text(model_svg(design_model(report,flow)),encoding='utf-8')
     return root

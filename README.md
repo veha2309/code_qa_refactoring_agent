@@ -1,37 +1,10 @@
-# Code QA & Refactoring Agent — Change Lens
+# Change Lens
 
-A native Windows application for exploring **potential code-change impact**, inspecting dependency evidence, recommending tests, and reviewing refactoring proposals. Built with Python and PySide6, with local analysis and optional local coding models.
+Change Lens is a native Windows workbench for tracing code changes, choosing relevant tests, and reviewing refactors. The Lens connects a selected function or saved edit to potentially affected code and tests. Each link carries source evidence you can inspect.
 
-The main workflow is the **Lens**: select a function or review saved changes, follow affected code across files, inspect the evidence, then choose tests or review a proposed patch.
+## Install and run from source
 
-## Features
-
-- **Change investigation:** automatic Git HEAD comparison (staged and unstaged tracked changes), untracked additions, or a saved first-open baseline for non-Git folders.
-- **Evidence-driven Lens:** direct/transitive references, alternate routes into shared callers, cross-file paths, an all-changes view, and access to unchanged project symbols after edits. Inferences and unresolved references stay visible.
-- **Native editor:** syntax color, paired diffs, contextual indentation, block indent/unindent, undoable formatting, file search with counts/highlights, and project search with file/line results.
-- **Test recommendations:** static test discovery and structural ranking. Python also has a starter logistic-regression model trained from scratch on controlled synthetic relevance examples. Scores are rankings, not confidence percentages.
-- **Reviewed refactoring:** Python rename/extract operations and bounded local-AI proposals for supported named functions/methods across languages. Proposals receive syntax/signature checks, a diff preview, freshness checks and recoverable backups before explicit application.
-- **Offline formatting:** bundled Black and Prettier; an installed Dart SDK supplies Dart formatting. Formatting changes the editor in one undoable step before explicit saving.
-- **Optional local AI:** Ollama-based inline completion, focused explanations and reviewed suggestions/regeneration. No paid API key is required.
-- **System and feature flows:** source-linked ES-module React/Axios/fetch → Express request paths, handler inputs, model operations, alternative responses and direct UI state/render updates. Ambiguous endpoints and unsupported links remain explicit. Editable diagrams support Undo/Redo and SVG/report export; class inventories remain a separate Code structure view.
-- **Minimal glass-style interface:** opaque code panels, subtle navigation/hover/drawer motion, a reduced-motion setting, stable tab refreshes and hidden Windows helper processes.
-
-## Language and framework coverage
-
-| Language | Analysis | Test execution after trust | Structural refactoring |
-| --- | --- | --- | --- |
-| Python | AST references, aliases, callers, classes and supported pytest fixture relationships | Selected pytest tests | Rename/extract with Rope |
-| JavaScript / JSX, TypeScript / TSX | Lexical references, local imports/exports, CommonJS, re-exports, JSX references and straightforward config aliases | Existing Node runner or installed Jest/Vitest; files or filters | AI proposals; rename/extract unavailable |
-| Dart / Flutter | Declarations, local/package imports, constructors, widget references and labeled build/createState inferences | Selected Flutter test files with a prepared SDK and dependencies | AI proposals; rename/extract unavailable |
-| Java, C#, Go, Rust | Conservative structural file/module/package relationships and declarations | Recommendations only | AI proposals; rename/extract unavailable |
-
-Framework dependency declarations identify common Python, React/Next.js/Node, Java, .NET, Go, Rust and Flutter stacks. **Detection is not complete framework support.** Dynamic dispatch, routing, dependency injection, templates, conditional libraries and language-specific constructs can remain unresolved. Vue/Svelte component files and several other languages are not parsed.
-
-Read [current capabilities and workflow details](evaluation/WORKFLOW_REFINEMENTS.md) and [multi-language boundaries](evaluation/MULTILANGUAGE.md).
-
-## Quick start on Windows
-
-Requirements: Windows x64, Git, Python 3.10+ and an initial internet connection for free dependencies and pinned formatter assets. The application then performs ordinary indexing/editing/formatting offline. This repository contains source, not a prebuilt executable.
+Use Windows x64, Git, and 64-bit Python 3.10 on your `PATH`. First-time setup needs internet access to install the pinned dependencies and prepare the bundled formatter and TypeScript refactoring assets.
 
 ```powershell
 git clone https://github.com/veha2309/code_qa_refactoring_agent.git
@@ -40,83 +13,62 @@ powershell -ExecutionPolicy Bypass -File scripts/setup.ps1
 .\.venv\Scripts\python.exe launcher.py
 ```
 
-Alternatively, double-click **Start Change Lens.cmd** after setup. The setup script creates a virtual environment, installs `requirements-lock.txt`, prepares missing formatter assets and trains the starter relevance model.
+After setup, you can also double-click **Start Change Lens.cmd**. Setup creates `.venv` and prepares the sample and its starter test-ranking model. Ordinary indexing, editing, and formatting run offline.
 
-Try **Open sample project**, or use **Ctrl+Shift+P** to select **Project: Open web sample** or **Project: Open Flutter sample**. Sample copies preserve your edits under the current Windows user's application-data directory.
+## First walkthrough
 
-### Useful shortcuts
+1. Press **Ctrl+Shift+P**, then choose **Project: Open sample**. This opens an editable copy of the invoice project. You can also click **Open** and choose your own project folder.
+2. Open `invoice.py` and place the cursor inside `calculate_invoice_total`. In **Review**, choose **Review function**. Open **Lens** to follow the recorded impact paths and choose **Linked tests** to inspect the candidates.
+3. In **Editor**, click `subtotal` to open the refactor panel. Enter a new name, preview the diff, then choose **Apply refactor**. The panel offers **Undo refactor** after a successful apply. Select an expression or block to preview an extraction.
+4. Save an edit and choose **Review changes** to compare saved source against Git HEAD or the recorded first-open baseline. Use **Design** to inspect source structure and supported feature flows.
 
-| Shortcut | Action |
-| --- | --- |
-| Ctrl+O / Ctrl+P | Open a project folder / find a file |
-| Ctrl+F / Ctrl+Shift+F | Find in the current buffer / search project text |
-| Ctrl+Shift+P | Command palette |
-| Alt+Shift+F | Preview document formatting |
-| Ctrl+Space | Static Python completion |
-| Ctrl+Enter | Request local-model completion |
-| Tab / Escape | Accept / dismiss a local inline proposal |
-| Ctrl+1 | Return to the editor |
+Run tests only in repositories you trust. Choose the project interpreter or test tooling before running the selected set. Test results are recorded separately from static recommendations.
 
-## Optional tools
+## Language coverage
 
-**Coding models:** install Ollama separately and prepare models from **Brief → Model settings**. The presentation preset uses `qwen2.5-coder:1.5b-base` for completion and `qwen2.5-coder:3b` for briefs/proposals, with a 2,048-token context and one app-managed model active at a time. It targets a 16 GB RAM / 4 GB GPU laptop; actual performance must be checked on that machine. Initial model downloads require internet. Model weights and Ollama are not redistributed here.
+| Language | Analysis | Refactoring and test execution |
+| --- | --- | --- |
+| Python | AST references, aliases, callers, classes, and supported pytest fixtures | Rename and extract with Rope. Run selected pytest tests with the project interpreter. |
+| JavaScript / JSX, TypeScript / TSX | Local imports and exports, CommonJS, lexical references, JSX, and supported config aliases | Rename and extract with the TypeScript language service. Run selected files or filters using a configured Node runner, Jest, or Vitest. |
+| Dart / Flutter | Declarations, imports, constructors, widget references, and labeled build relationships | Run selected Flutter test files with a prepared SDK and project dependencies. |
+| Java, C#, Go, Rust | Conservative file, module, and package relationships | Test recommendations. |
 
-**Project tests:** Python needs the project's interpreter/dependencies and pytest. JS/TS needs Node and the project's existing test tooling. Flutter formatting/testing needs an installed SDK; Flutter tests additionally require prepared cached tools and project dependencies. The app does not install packages, invoke npm scripts, run pub get, launch an emulator or execute tests on folder open.
+Optional model explanations and reviewed rewrite proposals are available across the indexed languages. Dependency links indicate potential impact. Dynamic dispatch, runtime routing, dependency injection, and other relationships can remain unresolved. See [analysis boundaries](evaluation/MULTILANGUAGE.md) and the [user guide](USER_GUIDE.md).
 
-Tests run only after an explicit action and repository trust. JS/TS/Flutter selection can execute all tests in selected files; Vitest filters may match additional files. Running tests executes trusted repository code and plugins on your machine.
+## Optional local coding models
 
-## Validation and evaluation
+Install Ollama separately and open **More → Local models / context settings**. The default preset uses `qwen2.5-coder:1.5b-base` for inline completion and `qwen2.5-coder:3b` for explanations and rewrite previews. Prepare each model you want to use, then connect it. Model downloads need internet access. Inference runs through the local Ollama service.
 
-The interface refinement passes **193 automated tests**; see [interface and typing changes](evaluation/UI_USABILITY.md). Earlier packaged verification also recorded native smoke checks and two passing controlled Flutter widget tests. See [portable verification summary](evaluation/verification_summary.json) and [reproduction commands](evaluation/README.md).
+Use **More → Tools → Code notes** for focused explanations and model review. Change Lens can attach relevant saved definitions with file and line references. Review model suggestions and the proposed diff before applying. [Ollama integration and verification](evaluation/OLLAMA_INTEGRATION.md)
+
+## Build a Windows bundle
+
+Run setup once, then build from the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build.ps1 -OutputDirectory dist/windows
+```
+
+Launch `dist/windows/ChangeLens/ChangeLens.exe`. To install a built copy, extract or copy the entire `ChangeLens` folder and launch the executable inside it. Keep `_internal` next to `ChangeLens.exe`. The bundle includes the app runtime and prepared assets. Ollama and project-specific test environments are separate.
+
+If a source checkout is missing the formatter or refactoring engine, rerun `scripts/setup.ps1`. The build command uses the Windows icon and bundles the same app as the source launcher.
+
+## Run the tests
 
 ```powershell
 $env:QT_QPA_PLATFORM = 'offscreen'
 $env:CHANGELENS_TEST_NO_AI = '1'
-$env:LOCALAPPDATA = Join-Path $env:TEMP 'ChangeLensVerification'
-.\.venv\Scripts\python.exe -m pytest tests -q
-.\.venv\Scripts\python.exe -m scripts.train
-.\.venv\Scripts\python.exe -m scripts.evaluate
+$testDir = Join-Path ([IO.Path]::GetTempPath()) ('ChangeLens-' + [guid]::NewGuid().ToString('N'))
+.\.venv\Scripts\python.exe -m pytest tests -q --basetemp $testDir
 ```
 
-Training uses versioned controlled examples in `resources/training_labels.json` and `resources/training_repo`. Public evaluation uses pinned Requests, Flask and Click snapshots with 30 partial, agent-reviewed function-selection scenarios. It is Python-only and does not execute those repositories. These results are not an independent regression benchmark or a comparison with Copilot. The optional coding LLMs are pretrained; only the relevance ranker is trained from scratch by this project.
+The tests cover source indexing, review and impact workflows, model context, and preview, apply, and undo. Some checks need optional tools. The [evaluation directory](evaluation/README.md) describes the fixtures, smoke tests, and historical measurements.
 
-## Build a Windows folder bundle
+## Repository layout
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/build.ps1 -OutputDirectory dist/workflow
-```
+- `changelens/` contains the editor, source index, impact analysis, test runner, refactoring, and model integration.
+- `resources/` contains the sample projects, app icon, fonts, and prepared asset locations.
+- `scripts/` contains setup, build, training, and evaluation commands.
+- `tests/` contains automated regression checks.
 
-Output: `dist/workflow/ChangeLens/ChangeLens.exe`. **Distribute the complete ChangeLens directory.** The unsigned prototype has no installer. The build collects resources and license notices, and its runtime handling addresses the earlier Qt DLL-loading issue. Generated executables, environments, caches and machine-specific reports are excluded from Git.
-
-The large Node formatter runtime is prepared locally by `scripts/prepare_formatter.py` using pinned official sources and integrity checks. Its executable is deliberately excluded from this source repository; setup restores it before use/build.
-
-## Source layout
-
-| Directory | Purpose |
-| --- | --- |
-| `changelens/` | Native UI, editor, indexing, snapshots, language adapters, impact tracing, ranking, search, AI/patch services and test runners |
-| `resources/` | Controlled Python/web/Flutter samples, training data/model, fonts, icons and licensed formatter assets |
-| `tests/` | Controlled functional and regression coverage |
-| `scripts/` | Setup, training, evaluation, asset preparation and Windows packaging |
-| `evaluation/` | Methodology, capability notes, pinned public labels/snapshots and portable verification summary |
-| `design/` | Design notes and architecture module background |
-
-## Limits and trust
-
-Analysis parses source without importing repository modules. It reports **potential impact**, not proof of failure or coverage. A passing syntax/signature check does not establish behavioral equivalence. Model proposals may be rejected or legitimately return no improvement. Structural rename/extract remains Python-only. Feature-flow support currently covers explicit ES-module React/Axios/fetch and Express patterns. Matching endpoint paths does not verify configured hosts, runtime routing or middleware behavior; other frameworks retain their code structure instead of an invented functional architecture.
-
-See [USER_GUIDE.md](USER_GUIDE.md) for the detailed workflow and [LICENSE](LICENSE), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and bundled license files for attribution. Change Lens source is MIT licensed; third-party components retain their respective licenses.
-
-
-### 3D Lens and offline LLD
-
-Lens now has a native 2D/3D projection selector with shared evidence, orbit/pan/zoom and node repositioning. **Architecture** adds deterministic saved-source review, Python import dependencies, class/method inventory, cycle and coupling findings, and module/LLD SVG diagrams. Export creates Markdown, JSON and SVG files with snapshot freshness checks. No LLM or external renderer is required. See [architecture support and verification](evaluation/ARCHITECTURE_LLD.md) and the [user guide](USER_GUIDE.md).
-
-
-The design view now separates **HLD** from **LLD** and includes a native editable canvas: card layout, member edits, notes, proposed relationships, undo/redo, draft recovery, editable JSON save/load and SVG export. Dart member extraction and paginated per-package/per-class exports replace the initial name-only grid. See [design refinement and verification](evaluation/DESIGN_EDITOR.md).
-
-
-Current refinements add a focused Options-based workspace, Lens component search, live changed-line markers, undoable hunk reverts, conflict-checked saved-file history, and token-budgeted local model context with exact snippet editing for oversized functions. See [change control and model context](evaluation/FOCUS_AND_CHANGE_CONTROL.md).
-
-
-Navigation correction: the main workspace switcher, Open/Files/Find and routine actions are visible again in one compact row. More contains advanced controls; HLD/LLD selectors and editing tools remain visible in Design. See [navigation repair](evaluation/NAVIGATION_REPAIR.md).
+Change Lens is [MIT licensed](LICENSE). Third-party components retain their respective licenses. See [notices](THIRD_PARTY_NOTICES.md) and [bundled licenses](THIRD_PARTY_LICENSES/).

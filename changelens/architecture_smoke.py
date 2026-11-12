@@ -23,6 +23,9 @@ def run(output):
     (root/'test_a.py').write_text('from a import entry\ndef test_entry(): assert entry(0) == 0\n',encoding='utf-8')
     (root/'server.js').write_text("import express from 'express';const app=express();app.get('/api/calendar/:id',(req,res)=>res.status(200).json({data:[]}));",encoding='utf-8')
     (root/'screen.jsx').write_text("import axios from 'axios';import {useState} from 'react';export function Calendar(){const [items,setItems]=useState([]);async function load(){const response=await axios.get(`/api/calendar/${id}`);setItems(response.data.data);}return <div><label for=\"calendar\">Date & Month</label>{items.map(x=><p>{x.month}</p>)}</div>;}",encoding='utf-8')
+    (root/'web/app/api/status').mkdir(parents=True)
+    (root/'web/package.json').write_text('{"dependencies":{"next":"15"}}',encoding='utf-8')
+    (root/'web/app/api/status/route.ts').write_text("import {NextResponse} from 'next/server';export function GET(){return NextResponse.json({ok:true});}",encoding='utf-8')
     output.parent.mkdir(parents=True,exist_ok=True);checks=[];stage=0;started=time.monotonic()
     window=MainWindow();window.show();timer=QTimer()
     def finish(error=None):
@@ -63,10 +66,26 @@ def run(output):
                 assert 'heuristic findings' not in window.architecture_view.overview.toPlainText()
                 checks.append('JSX keyword / ampersand compatibility and source-backed grouped review queue')
                 flows=window.architecture_view.flows;assert report['feature_flows']['summary']['path_matches']==1
+                assert any(r.get('framework')=='Next.js App Router' for r in report['feature_flows']['routes'])
+                assert report['feature_flows']['server_flows'] and any(n['kind']=='Source modules' for n in flows.canvas.model['nodes'])
+                checks.append('language-neutral module overview and standalone Next.js route evidence')
                 assert window.architecture_view.tabs.currentWidget() is flows
                 flows.search.setText('Calendar');flows.features.setCurrentRow(0);app.processEvents()
+                feature=flows.current_flow;flows.show_detail();assert flows.evidence.topLevelItemCount()>0
+                flows.travel(-1);assert not flows.detail;flows.travel(1);assert flows.detail and flows.current_flow==feature
+                checks.append('feature breadcrumbs, Back/Forward and typed implementation evidence')
                 assert any(n['kind']=='UI rendering' for n in flows.canvas.model['nodes'])
                 canvas=flows.canvas;ids=list(canvas.nodes)[:2];original={sid:(canvas.nodes[sid].pos().x(),canvas.nodes[sid].pos().y()) for sid in ids}
+                navigation=canvas.view;navigation.centerOn(canvas.nodes[ids[0]].sceneBoundingRect().center());app.processEvents()
+                point=navigation.mapFromScene(canvas.nodes[ids[0]].sceneBoundingRect().center());end=point+QPoint(60,40);viewport=navigation.viewport()
+                center=navigation.mapToScene(viewport.rect().center());history=canvas.history.count()
+                QTest.mousePress(viewport,Qt.MouseButton.MiddleButton,Qt.KeyboardModifier.NoModifier,point)
+                app.sendEvent(viewport,QMouseEvent(QEvent.Type.MouseMove,QPointF(end),QPointF(viewport.mapToGlobal(end)),Qt.MouseButton.NoButton,Qt.MouseButton.MiddleButton,Qt.KeyboardModifier.NoModifier))
+                QTest.mouseRelease(viewport,Qt.MouseButton.MiddleButton,Qt.KeyboardModifier.NoModifier,end);app.processEvents()
+                assert navigation.mapToScene(viewport.rect().center())!=center
+                assert original=={sid:(canvas.nodes[sid].pos().x(),canvas.nodes[sid].pos().y()) for sid in ids} and canvas.history.count()==history
+                checks.append('native Design pan over cards moves the viewport without moving cards or adding Undo history')
+                canvas.pan_button.setChecked(False)
                 for sid in ids:canvas.nodes[sid].setSelected(True)
                 app.processEvents();canvas.view.centerOn(canvas.nodes[ids[0]].sceneBoundingRect().center());app.processEvents()
                 start=canvas.view.mapFromScene(canvas.nodes[ids[0]].sceneBoundingRect().center());end=start+QPoint(40,25);viewport=canvas.view.viewport()

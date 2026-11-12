@@ -18,7 +18,57 @@ def sample_model():
 def positions(editor):return {r['id']:(r['x'],r['y']) for r in editor.model['nodes']}
 
 
+def drag_view(editor,app,start,delta,button=Qt.MouseButton.LeftButton,modifiers=Qt.KeyboardModifier.NoModifier):
+    viewport=editor.view.viewport();end=start+delta
+    QTest.mousePress(viewport,button,modifiers,start)
+    app.sendEvent(viewport,QMouseEvent(QEvent.Type.MouseMove,QPointF(end),QPointF(viewport.mapToGlobal(end)),Qt.MouseButton.NoButton,button,modifiers))
+    QTest.mouseRelease(viewport,button,modifiers,end);app.processEvents()
+
+
+@pytest.mark.parametrize('level',['HLD','LLD'])
+def test_background_middle_space_and_pan_tool_move_view_only(level):
+    app=QApplication.instance() or QApplication([]);editor=EditableDesign();editor.resize(1500,800)
+    model=sample_model();model['level']=level;editor.set_model(model);editor.show();app.processEvents();editor.frame_readable();app.processEvents()
+    before=positions(editor);view=editor.view
+    def center():return view.mapToScene(view.viewport().rect().center())
+    start=QPoint(15,view.viewport().height()-15);original=center()
+    # Multiple drags beyond the original tight scene rectangle must keep working.
+    for _ in range(5):drag_view(editor,app,start,QPoint(110,75))
+    assert center().x()<original.x()-500 and center().y()<original.y()-300
+    view.centerOn(editor.nodes['one'].sceneBoundingRect().center());app.processEvents()
+    point=view.mapFromScene(editor.nodes['one'].sceneBoundingRect().center());original=center()
+    drag_view(editor,app,point,QPoint(-80,-50),Qt.MouseButton.MiddleButton)
+    assert center()!=original
+    view.setFocus();QTest.keyPress(view,Qt.Key.Key_Space);point=view.mapFromScene(editor.nodes['one'].sceneBoundingRect().center());original=center()
+    drag_view(editor,app,point,QPoint(65,40));QTest.keyRelease(view,Qt.Key.Key_Space)
+    assert center()!=original and not view._space
+    editor.pan_button.setChecked(True);point=view.mapFromScene(editor.nodes['one'].sceneBoundingRect().center());original=center()
+    drag_view(editor,app,point,QPoint(35,25));assert center()!=original
+    assert positions(editor)==before and editor.history.count()==0
+    editor.pan_button.setChecked(False);editor.close();app.processEvents()
+
+
+def test_shift_box_selection_wheel_trackpad_zoom_and_focus_reset():
+    from PySide6.QtGui import QWheelEvent,QFocusEvent
+    app=QApplication.instance() or QApplication([]);editor=EditableDesign();editor.resize(1700,900);editor.set_model(sample_model());editor.show();app.processEvents();editor.frame_readable();app.processEvents();view=editor.view
+    start=view.mapFromScene(QPointF(-20,-20));end=view.mapFromScene(QPointF(800,160))
+    drag_view(editor,app,start,end-start,modifiers=Qt.KeyboardModifier.ShiftModifier)
+    assert {i.record['id'] for i in editor.scene.selectedItems() if hasattr(i,'record')}=={'one','two'}
+    point=QPoint(160,160)
+    def wheel(pixel,angle,mod=Qt.KeyboardModifier.NoModifier):
+        app.sendEvent(view.viewport(),QWheelEvent(QPointF(point),QPointF(view.viewport().mapToGlobal(point)),pixel,angle,Qt.MouseButton.NoButton,mod,Qt.ScrollPhase.NoScrollPhase,False))
+    before=view.mapToScene(point);scale=view.transform().m11()
+    wheel(QPoint(),QPoint(0,120),Qt.KeyboardModifier.ControlModifier)
+    assert view.transform().m11()>scale and (view.mapToScene(point)-before).manhattanLength()<4
+    before=view.mapToScene(point);wheel(QPoint(32,-24),QPoint());assert view.mapToScene(point)!=before
+    before=view.mapToScene(point);wheel(QPoint(),QPoint(0,-120),Qt.KeyboardModifier.ShiftModifier)
+    assert view.mapToScene(point).x()>before.x()
+    view.setFocus();QTest.keyPress(view,Qt.Key.Key_Space);view.focusOutEvent(QFocusEvent(QEvent.Type.FocusOut));assert not view._space and view._pan_pos is None
+    editor.close();app.processEvents()
+
+
 def drag_card(editor,app,sid,delta=QPoint(55,35)):
+    editor.pan_button.setChecked(False)
     start=editor.view.mapFromScene(editor.nodes[sid].sceneBoundingRect().center());end=start+delta;viewport=editor.view.viewport()
     QTest.mousePress(viewport,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,start)
     move=QMouseEvent(QEvent.Type.MouseMove,QPointF(end),QPointF(viewport.mapToGlobal(end)),Qt.MouseButton.NoButton,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
@@ -65,6 +115,7 @@ def test_optional_3d_has_xyz_orbit_reset_picking_and_shared_evidence(tmp_path,mo
     monkeypatch.setenv('LOCALAPPDATA',str(tmp_path/'settings'));monkeypatch.setenv('CHANGELENS_TEST_NO_AI','1')
     (tmp_path/'source.py').write_text('def source():return 1\ndef first():return source()\ndef second():return source()\ndef app():return first()+second()\n')
     app=QApplication.instance() or QApplication([]);window=MainWindow();window.resize(1500,850);window.show();window.open_path(tmp_path);wait(app,window)
+    window.navigate(6);window.pages.finish_transition()
     lens=window.lens_view;lens.show_root('source.py:source');assert lens.mode.currentIndex()==0
     assert [lens.mode.itemText(i) for i in range(lens.mode.count())]==['Impact map','Layers','3D']
     lens.mode.setCurrentIndex(2);app.processEvents();view=lens.perspective_map

@@ -11,7 +11,7 @@ import sys
 # host's injected PATH. Qt 6 uses the Windows operating-system ICU library.
 os.environ["PATH"] = os.pathsep.join(
     item for item in os.environ.get("PATH", "").split(os.pathsep)
-    if "codex-runtimes" not in item.lower()
+    if not any(runtime in item.casefold() for runtime in ("codex-runtimes", "openai.codexprimaryruntime."))
 )
 
 

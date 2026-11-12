@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 
 from changelens.workspace import analyze_workspace, load_baseline
 from changelens.workbench import MainWindow
+from changelens.qa_ui import REVIEW_PAGE
 
 
 def write(root, path, source):
@@ -33,8 +34,11 @@ def test_first_open_records_comparison_without_overwriting_on_reopen(tmp_path,mo
     initial=load_baseline(str(root))
     assert report["comparison_context"]["created"]
     assert not report["changes"]["seeds"]
+    same,unchanged=analyze_workspace(root,previous_snapshot=snapshot)
+    assert same is snapshot and not unchanged["comparison_context"]["created"]
     write(root,"a.py","def total(): return 2\n")
-    _,reopened=analyze_workspace(root)
+    edited,reopened=analyze_workspace(root,previous_snapshot=snapshot)
+    assert edited is not snapshot
     assert reopened["changes"]["seeds"]==["a.py:total"]
     assert not reopened["comparison_context"]["created"]
     assert load_baseline(str(root))["captured_at"]==initial["captured_at"]
@@ -63,9 +67,11 @@ def test_open_edit_save_checks_and_review_without_setup(tmp_path,monkeypatch):
     until(app,lambda:window.worker is None and window.report is not None)
     assert window.comparison.currentData()=="auto" and not window.comparison.isVisible()
     assert not window.interpreter.isVisible() and not window.timeout.isVisible()
-    assert window.pages.currentIndex()==6
+    assert window.pages.currentIndex()==REVIEW_PAGE
     window.navigate(0)
     editor=window.current_editor(); editor.moveCursor(QTextCursor.MoveOperation.Start); assert editor.find("+ 1")
+    window.save_current()
+    assert not window.check_timer.isActive() and not window.pending_check
     editor.textCursor().insertText("+ 2"); window.save_current()
     until(app,lambda:window.worker is None and not window.report_stale and window.report["summary"]["recommended_tests"]==1)
     assert window.pages.currentIndex()==0
@@ -100,6 +106,7 @@ def test_typed_rename_previews_automatically_but_does_not_apply(tmp_path,monkeyp
     until(app,lambda:window.worker is None and window.report is not None)
     editor=window.current_editor(); editor.moveCursor(QTextCursor.MoveOperation.Start); assert editor.find("total")
     window.prepare_rename(); window.new_name.clear(); QTest.keyClicks(window.new_name,"net_total")
+    assert window.tool_window.page_index == 4 and window.pages.currentIndex() == REVIEW_PAGE
     until(app,lambda:window.worker is None and window.patch is not None)
     assert "net_total" in window.patch["diff"] and (root/"a.py").read_text()==original
     assert window.apply_button.isEnabled()

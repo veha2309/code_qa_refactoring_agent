@@ -33,7 +33,7 @@ def test_lld_fields_signatures_cycles_and_evidence_without_execution(tmp_path):
 def test_export_snapshot_freshness_escaping_and_standalone_diagrams(tmp_path):
     root=tmp_path/'source space ü';root.mkdir();snap=project(root);report=review_architecture(snap)
     out=export_bundle(report,snap,tmp_path)
-    assert {p.name for p in out.iterdir()}=={'report.md','report.json','architecture.svg','lld.svg','lld-index.md','lld'}
+    assert {p.name for p in out.iterdir()}=={'report.md','report.json','architecture.svg','lld.svg','lld-index.md','lld','systems.svg','flows.md','flows'}
     assert json.loads((out/'report.json').read_text(encoding='utf-8'))['hashes']==snap.hashes
     for name in ['architecture.svg','lld.svg']:ET.parse(out/name)
     report['project']='<script>&"';assert '&lt;script&gt;&amp;' in diagram_svg(report)

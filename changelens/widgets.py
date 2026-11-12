@@ -6,7 +6,7 @@ import re
 from PySide6.QtCore import Qt, QRect, QSize, Signal, QTimer,QEvent,QStringListModel
 from PySide6.QtGui import (QColor, QFont, QPainter, QPen, QPolygon, QSyntaxHighlighter,
     QTextCharFormat, QTextCursor, QKeySequence, QIcon, QPixmap, QPainterPath)
-from PySide6.QtWidgets import (QCompleter, QFrame, QHBoxLayout, QLabel, QPlainTextEdit,
+from PySide6.QtWidgets import (QApplication, QCompleter, QFrame, QHBoxLayout, QLabel, QPlainTextEdit,
     QSplitter, QTextEdit, QVBoxLayout, QWidget)
 
 
@@ -133,6 +133,9 @@ class CodeEditor(QPlainTextEdit):
     saveRequested = Signal()
     positionChanged = Signal(str)
     refactorRequested = Signal(str)
+    refactorClicked = Signal(int, int)
+    refactorSelectionRequested = Signal(int, int)
+    dismissRefactorRequested = Signal()
     definitionRequested = Signal()
     aiCompletionRequested = Signal()
     formatRequested = Signal()
@@ -477,7 +480,49 @@ class CodeEditor(QPlainTextEdit):
         else:cursor.insertText('\n'+indent+(self.indent_text if increase else ''))
         cursor.endEditBlock();self.setTextCursor(cursor)
 
+    def mousePressEvent(self,event):
+        self.dismissRefactorRequested.emit()
+        self._refactor_press = (event.position().toPoint() if event.button()==Qt.MouseButton.LeftButton
+                                and not event.modifiers() else None)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self,event):
+        super().mouseReleaseEvent(event)
+        start=getattr(self,"_refactor_press",None)
+        self._refactor_press=None
+        point=event.position().toPoint()
+        if start is None or event.button()!=Qt.MouseButton.LeftButton or self.isReadOnly():
+            return
+        if (start-point).manhattanLength()>=QApplication.startDragDistance():
+            selection=self.textCursor()
+            if selection.hasSelection():
+                self.refactorSelectionRequested.emit(selection.selectionStart(),selection.selectionEnd())
+            return
+        if self.textCursor().hasSelection():return
+        cursor=self.cursorForPosition(point)
+        block=cursor.block()
+        text=block.text()
+        for word in re.finditer(r"(?<![\w$])(?:[^\W\d]|\$)[\w$]*",text):
+            left=len(text[:word.start()].encode("utf-16-le"))//2
+            right=left+len(word.group().encode("utf-16-le"))//2
+            if not left<=cursor.positionInBlock()<=right:continue
+            cursor.setPosition(block.position()+left)
+            first=self.cursorRect(cursor)
+            cursor.setPosition(block.position()+right)
+            last=self.cursorRect(cursor)
+            if not (first.left()<=point.x()<last.left() and first.top()<=point.y()<=first.bottom()):
+                return
+            # Ignore keywords, comments and strings using the existing highlighter.
+            if keyword.iskeyword(word.group()) or any(
+                    item.start<=left<item.start+item.length
+                    and item.format.foreground().color().name() in {"#c678dd","#98c379","#7a8087","#7f8a90"}
+                    for item in block.layout().formats()):
+                return
+            self.refactorClicked.emit(block.position()+left,block.position()+right)
+            return
+
     def keyPressEvent(self, event):
+        self.dismissRefactorRequested.emit()
         self.completion_timer.stop()
         if self.ghost_text and event.key()==Qt.Key.Key_Tab:
             self.accept_ghost(); return
@@ -499,6 +544,9 @@ class CodeEditor(QPlainTextEdit):
             self.completionRequested.emit()
             return
         modifiers = event.modifiers()
+        if modifiers == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_Period:
+            self.refactorRequested.emit("extract_method" if self.textCursor().hasSelection() else "rename")
+            return
         if event.key() == Qt.Key.Key_Home and not modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier):
             self.smart_home(bool(modifiers & Qt.KeyboardModifier.ShiftModifier)); return
         if modifiers == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_Slash:
@@ -533,6 +581,12 @@ class CodeEditor(QPlainTextEdit):
             elif event.text() and (event.text().isalnum() and len(self.prefix()) >= 2 or event.text() == "."):
                 self.completion_timer.start()
 
+    def keyReleaseEvent(self, event):
+        super().keyReleaseEvent(event)
+        cursor=self.textCursor()
+        if event.key()==Qt.Key.Key_Shift and cursor.hasSelection() and not self.isReadOnly():
+            self.refactorSelectionRequested.emit(cursor.selectionStart(),cursor.selectionEnd())
+
     def contextMenuEvent(self, event):
         menu = self.createStandardContextMenu()
         if not self.isReadOnly():
@@ -545,17 +599,19 @@ class CodeEditor(QPlainTextEdit):
             menu.addSeparator()
             menu.addAction("Format document   Alt+Shift+F",self.formatRequested.emit)
             menu.addAction("Go to definition   F12", self.definitionRequested.emit)
-            menu.addAction("Complete Python   Ctrl+Space", self.completionRequested.emit)
+            menu.addAction("Complete code   Ctrl+Space", self.completionRequested.emit)
             menu.addSeparator()
-            menu.addAction("Rename symbol…", lambda: self.refactorRequested.emit("rename"))
+            structural=getattr(self,"_syntax_language","python") in {"python","javascript","typescript","tsx"}
+            rename=menu.addAction("Rename symbol…", lambda: self.refactorRequested.emit("rename"))
+            rename.setEnabled(structural)
             for title, operation in [("Extract helper…", "extract_method"), ("Extract variable…", "extract_variable")]:
                 item = menu.addAction(title, lambda checked=False, op=operation: self.refactorRequested.emit(op))
-                item.setEnabled(self.textCursor().hasSelection())
+                item.setEnabled(structural and self.textCursor().hasSelection())
         menu.exec(event.globalPos())
 
 
 class DiffViewer(QWidget):
-    def __init__(self):
+    def __init__(self, *, before_label="BASE VERSION", after_label="WORKING VERSION"):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -564,7 +620,7 @@ class DiffViewer(QWidget):
         layout.addWidget(self.caption)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.before, self.after = CodeEditor(True), CodeEditor(True)
-        for title, editor in [("BASE VERSION", self.before), ("WORKING VERSION", self.after)]:
+        for title, editor in [(before_label, self.before), (after_label, self.after)]:
             panel = QWidget()
             column = QVBoxLayout(panel)
             column.setContentsMargins(0, 0, 0, 0)
@@ -585,7 +641,7 @@ class DiffViewer(QWidget):
             target.verticalScrollBar().setValue(value)
             self._syncing = False
 
-    def set_versions(self, before, after, caption=""):
+    def set_versions(self, before, after, caption="", *, focus_change=False):
         if caption:self.before.set_language(caption); self.after.set_language(caption)
         old, new = before.splitlines(), after.splitlines()
         removed, added = set(), set()
@@ -605,6 +661,10 @@ class DiffViewer(QWidget):
         self.before.diff_lines = {row: "#3b202b" for row in removed}
         self.after.diff_lines = {row: "#15382e" for row in added}
         self.before.highlight_lines(); self.after.highlight_lines()
+        if focus_change and (removed or added):
+            line=min(removed|added)+1
+            self.before.goto_line(line)
+            self.after.goto_line(line)
         self.caption.setText(f"{caption}    +{len(added)} added   -{len(removed)} removed")
         if removed:
             self.before.setTextCursor(QTextCursor(self.before.document().findBlockByNumber(min(removed))))

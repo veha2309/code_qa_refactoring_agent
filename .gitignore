@@ -8,8 +8,14 @@ dist/
 *.egg-info/
 evaluation/repos/
 
+# Local academic deliverables and private build/verification work.
+/output/
+/tmp/
+/PROGRESS_REPORT.md
+
 # Prepared by scripts/prepare_formatter.py; do not put runtime executables in Git.
 /resources/formatting/node.exe
+/resources/refactoring/node_modules/
 
 # Local verification artifacts may contain absolute paths or external project data.
 /evaluation/*
