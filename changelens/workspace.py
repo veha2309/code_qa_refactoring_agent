@@ -28,9 +28,31 @@ class Document:
         self.digest = hashlib.sha256(self.raw).hexdigest()
 
     def save(self, text: str):
-        if not self.path.exists() or hashlib.sha256(self.path.read_bytes()).hexdigest() != self.digest:
-            raise ValueError("This file changed outside the editor. Reopen it before saving to avoid overwriting those changes.")
-        raw = text.replace("\n", self.newline).encode(self.encoding)
+        self.save_raw(self.encode(text))
+
+    def encode(self, text):
+        if self.newline == "\r\n" and b"\n" in self.raw.replace(b"\r\n", b""):
+            original = self.raw.decode(self.encoding).splitlines(keepends=True)
+            current = text.splitlines(keepends=True)
+            output = [line.replace("\n", self.newline) for line in current]
+            matcher = difflib.SequenceMatcher(None, [line.replace("\r\n", "\n") for line in original], current)
+            for tag, old, old_end, new, new_end in matcher.get_opcodes():
+                if tag == "equal":
+                    output[new:new_end] = original[old:old_end]
+                elif tag == "replace":
+                    for offset in range(min(old_end - old, new_end - new)):
+                        if original[old + offset].endswith("\n") and current[new + offset].endswith("\n"):
+                            ending = "\r\n" if original[old + offset].endswith("\r\n") else "\n"
+                            output[new + offset] = current[new + offset][:-1] + ending
+            return "".join(output).encode(self.encoding)
+        return text.replace("\n", self.newline).encode(self.encoding)
+
+    def save_raw(self,raw,origin="save"):
+        if not self.path.exists() or hashlib.sha256(self.path.read_bytes()).hexdigest()!=self.digest:
+            raise ValueError("This file changed outside the editor. Reopen it before saving.")
+        previous=self.raw
+        encoding = tokenize.detect_encoding(io.BytesIO(raw).readline)[0] if language_for(self.path)=="python" else "utf-8-sig" if raw.startswith(b'\xef\xbb\xbf') else "utf-8"
+        text = decode_source(raw, self.path).replace("\r\n", "\n")
         previous_mode = self.path.stat().st_mode
         fd, name = tempfile.mkstemp(prefix=".changelens-", dir=self.path.parent)
         try:
@@ -39,12 +61,28 @@ class Document:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.chmod(name, previous_mode)
-            os.replace(name, self.path)
+            for attempt in range(4):
+                if hashlib.sha256(self.path.read_bytes()).hexdigest() != self.digest:
+                    raise ValueError("This file changed while saving. Reopen it before trying again.")
+                try:
+                    os.replace(name, self.path)
+                    break
+                except PermissionError as exc:
+                    # A Windows file watcher or scanner can briefly hold a sharing lock.
+                    if getattr(exc,"winerror",None) not in {5,32,33} or attempt==3:
+                        raise
+                    time.sleep(.06*(attempt+1))
         finally:
             if os.path.exists(name):
                 os.unlink(name)
-        self.raw, self.text = raw, text
+        self.raw, self.text, self.encoding = raw, text, encoding
+        self.newline = "\r\n" if b"\r\n" in raw else "\n"
         self.digest = hashlib.sha256(raw).hexdigest()
+        self.history_warning=''
+        try:
+            from .change_history import record
+            record(self.path,previous,raw,origin)
+        except (OSError,sqlite3.Error) as exc:self.history_warning='Saved, but local history could not be recorded: '+str(exc)
 
 
 def capture_baseline(snapshot: Snapshot):
@@ -135,19 +173,25 @@ def baseline_changes(snapshot: Snapshot, baseline: dict, cancel=None):
             "historical_edges": edges, "warnings": warnings}
 
 
-def analyze_workspace(root: Path, seeds=None, comparison="auto", model_path=None, cancel=None, progress=lambda *_: None):
+def analyze_workspace(root: Path, seeds=None, comparison="auto", model_path=None, cancel=None,
+                      progress=lambda *_: None, *, previous_snapshot=None):
     started = time.perf_counter()
-    snapshot = index_repository(root, cancel, progress)
+    snapshot = index_repository(root, cancel, progress, previous=previous_snapshot)
     checkpoint(cancel)
-    save_snapshot(snapshot)
+    if snapshot is not previous_snapshot:
+        save_snapshot(snapshot)
     context = automatic_comparison(snapshot) if comparison == "auto" else {"mode":comparison,"label":"Git HEAD" if comparison=="git" else "Saved comparison point", "created":False}
     comparison = context["mode"]
+    focus = seeds.copy() if isinstance(seeds, dict) and seeds.get("review") else None
     if isinstance(seeds, dict):
+        line = seeds.get("line")
         matches = [symbol for symbol in snapshot.symbols.values()
-                   if symbol.path == seeds["path"] and symbol.start <= seeds["line"] <= symbol.end]
-        if not matches:
+                   if symbol.path == seeds["path"] and (line is None or symbol.start <= line <= symbol.end)]
+        if not matches and not (focus and focus["path"] in snapshot.hashes):
             raise ValueError("Place the cursor inside a function, class or source module, or choose a symbol from the Lens.")
-        seeds = [min(matches, key=lambda symbol: symbol.end - symbol.start).id]
+        if line is not None:
+            matches = sorted(matches, key=lambda symbol: (symbol.end - symbol.start, symbol.kind == "module"))[:1]
+        seeds = [symbol.id for symbol in matches]
     if seeds is not None:
         selection_warnings=[]; expanded=[]
         for sid in seeds:
@@ -196,6 +240,20 @@ def analyze_workspace(root: Path, seeds=None, comparison="auto", model_path=None
               "coverage_note": "Static references and explicitly labeled inferences. Dynamic behavior and fixture dependencies may be missing."}
     reachable={row['symbol'] for row in impact}
     report['relationships']=[edge for edge in merged.edges if edge['caller'] in reachable and edge['callee'] in reachable]
+    if any(language_for(p) in {'javascript','typescript','tsx'} for p in snapshot.hashes):
+        from .feature_flows import analyze_flows
+        from .flow_evidence import affected_features
+        progress('Linking saved changes to feature journeys')
+        report['feature_flows']=analyze_flows(snapshot,cancel,progress)
+        report['affected_features']=affected_features(report['feature_flows'],{'seeds':list(dict.fromkeys(changes['seeds']+[r['symbol'] for r in impact]))},report['locations'])
+        for feature in report['affected_features']:
+            paths={s['source']['path'] for s in feature['evidence']}
+            feature['impact_evidence']=[r for r in impact if report['locations'].get(r['symbol'],{}).get('path') in paths]
+    report['summary']['seconds']=time.perf_counter()-started
+    if focus:
+        report["review_focus"] = focus
+    from .qa_review import review_items
+    report["qa_items"] = review_items(report, cancel)
     return snapshot, report
 
 

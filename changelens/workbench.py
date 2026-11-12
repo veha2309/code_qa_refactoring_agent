@@ -7,10 +7,10 @@ import sys
 
 from PySide6.QtCore import Qt, QSize, QTimer, QFileSystemWatcher
 from PySide6.QtGui import QAction, QFont, QFontDatabase, QIcon, QKeySequence, QTextCursor
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter,
-    QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QTreeWidget,
+    QStackedWidget, QTabWidget, QToolButton, QMenu, QTableWidget, QTableWidgetItem, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget, QAbstractItemView, QSizePolicy)
 
 from .jobs import Worker
@@ -18,20 +18,23 @@ from .core import EXCLUDED, app_dir, checkpoint, decode_source, ensure_fresh, gi
 from .workspace import Document, analyze_workspace, capture_baseline, load_baseline
 from .ranking import resources, train_model
 from .completion import complete_python, find_definition
-from .refactoring import apply_reviewed_patch, preview_refactoring, suggestions
+from .refactoring import apply_reviewed_patch, linked_tests, preview_refactoring, suggestions, undo_reviewed_patch
 from .runner import detect_interpreter, run_project_tests
 from .demo import execute_demo
 from .widgets import CodeEditor, DiffViewer, icon
 from .theme import STYLESHEET
+from .file_icons import file_icon, folder_icon
 from .ai_workbench import AIWorkbench
 from .lens import ChangeLens
-from .languages import is_source,is_indexable,language_for,NAMES
+from .languages import is_source,is_indexable,language_for,NAMES,structural_refactoring
 from .polyglot import INFERRED_KINDS
 from .js_runner import execution_family,detect_node
 from .formatting import formatter_for,format_document
 from .format_ui import FormatPreview,apply_to_editor
 from .surfaces import GlassWorkspace
 from .motion import AnimatedStack,AnimatedNavigation,atomic_paint,paint_transaction
+from .qa_ui import QAWorkbench, REVIEW_PAGE
+from .inline_refactor import InlineRefactorWorkbench
 
 
 def text(value, style=""):
@@ -53,25 +56,33 @@ def column(widget=None, margins=0):
     return widget,layout
 
 
-class MainWindow(AIWorkbench,QMainWindow):
+class MainWindow(InlineRefactorWorkbench,QAWorkbench,AIWorkbench,QMainWindow):
     def __init__(self):
         super().__init__()
         for name in ("NotoSans-Regular.ttf","NotoSansMono-Regular.ttf","RobotoMono.ttf"):
             QFontDatabase.addApplicationFont(str(resources()/"fonts"/name))
-        self.snapshot=self.report=self.patch=self.worker=self.completion_worker=None
+        self.snapshot=self.report=self.patch=self.worker=self.completion_worker=self.applied_patch=None
         self._pending_result=self._pending_error=None
         self.documents={}; self.editors={}; self.change_rows=[]; self.test_rows=[]; self.trusted_roots=set()
         self.report_stale=False; self.patch_stale=False; self.test_choices={}
-        self.pending_check=False; self.auto_refresh=False
+        self.patch_write_editors=None
+        self.qa_fix_request=self.refactor_ai_target=None
+        self.pending_check=False
+        self.tool_panes = {}
+        self.tool_window = None
         self.check_timer=QTimer(self); self.check_timer.setSingleShot(True); self.check_timer.setInterval(1000); self.check_timer.timeout.connect(self.automatic_check)
         self.preview_timer=QTimer(self); self.preview_timer.setSingleShot(True); self.preview_timer.setInterval(650); self.preview_timer.timeout.connect(self.automatic_preview)
         self.watcher=QFileSystemWatcher(self); self.watcher.fileChanged.connect(self.files_changed); self.watcher.directoryChanged.connect(self.files_changed)
-        self.setWindowTitle("Change Lens"); self.resize(1440,920); self.setMinimumSize(1120,720)
+        self.setWindowTitle("Change Lens"); self.resize(1440,920); self.setMinimumSize(960,640)
+        app_icon=QIcon(str(resources()/"icons"/"change-lens.ico"))
+        self.setWindowIcon(app_icon)
         root,outer=column(GlassWorkspace()); outer.setContentsMargins(12,8,12,0);outer.setSpacing(8); self.setCentralWidget(root)
         header=QFrame(); header.setObjectName("topbar"); row=QHBoxLayout(header); row.setContentsMargins(20,12,20,12)
-        brand=text("CL","brandMark"); brand.setFixedSize(36,36); brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand=QLabel(); brand.setFixedSize(24,24); brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand.setPixmap(app_icon.pixmap(brand.size(),self.devicePixelRatioF()))
+        brand.setToolTip("Change Lens")
         row.addWidget(brand); row.addWidget(text("Change Lens","brand")); row.addSpacing(20)
-        self.project_name=text("No workspace open","muted"); row.addWidget(self.project_name,1); row.addWidget(text("LOCAL / PYTHON","badge"))
+        self.project_name=text("No workspace open","muted"); row.addWidget(self.project_name,1); row.addWidget(text("LOCAL / OFFLINE","badge"))
         self.open_button=action("Open folder",self.open_repository,glyph="folder"); row.addWidget(self.open_button)
         self.save_button=action("Save",self.save_current,glyph="save"); row.addWidget(self.save_button)
         self.changes_button=action("Analyze changes",self.analyze_changes,True,"impact"); row.addWidget(self.changes_button)
@@ -87,6 +98,9 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.reindex_button=action("Refresh",self.reindex); self.reindex_button.setObjectName("smallButton"); explorer_tools.addWidget(self.reindex_button); sidebar.addLayout(explorer_tools)
         self.search=QLineEdit(); self.search.setPlaceholderText("Find file or symbol…"); self.search.textChanged.connect(self.filter_tree); sidebar.addWidget(self.search)
         self.explorer=QTreeWidget(); self.explorer.setHeaderHidden(True); self.explorer.setObjectName("explorer"); self.explorer.setIndentation(14)
+        self.explorer.setIconSize(QSize(20,20))
+        self.explorer.itemExpanded.connect(lambda item: self.update_folder_icon(item, True))
+        self.explorer.itemCollapsed.connect(lambda item: self.update_folder_icon(item, False))
         self.explorer.itemClicked.connect(self.explorer_clicked); sidebar.addWidget(self.explorer,1)
         self.repo_summary=text("Open a folder to explore its files.","muted"); sidebar.addWidget(self.repo_summary); body.addWidget(side)
         content,main=column(margins=24)
@@ -104,6 +118,8 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.cancel_button=action("Cancel",self.cancel); self.cancel_button.hide(); line.addWidget(self.cancel_button)
         self.position=text("UTF-8","muted"); line.addWidget(self.position); outer.addWidget(footer)
         self.build_editor(); self.build_changes(); self.build_impact(); self.build_tests(); self.build_refactor(); self.build_diagnostics(); self.build_review(); self.build_ai(); self.build_menu()
+        self.build_architecture()
+        self.build_qa_review()
         self.compact_chrome(sidebar,main,header,heading,headings,brand)
         self.apply_theme(); self.navigate(0); self.refresh_actions()
         self.initialize_ai()
@@ -130,7 +146,7 @@ class MainWindow(AIWorkbench,QMainWindow):
         main.setContentsMargins(8,0,0,0); main.setSpacing(8)
         sidebar.removeWidget(self.nav)
         self.nav.setParent(None); self.nav.setFlow(QListWidget.Flow.LeftToRight); self.nav.setWrapping(False)
-        self.nav.setFixedHeight(42); self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.nav.setFixedHeight(38); self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for index,title in enumerate(["Code","Changes","Impact","Tests","Refactor","Diagnostics"]):
             item=self.nav.item(index); item.setText(title); item.setIcon(QIcon()); item.setSizeHint(QSize(94 if index<5 else 110,34))
         review_item=QListWidgetItem("Review"); review_item.setSizeHint(QSize(94,34)); self.nav.addItem(review_item)
@@ -142,11 +158,15 @@ class MainWindow(AIWorkbench,QMainWindow):
             item=self.nav.item(row_index); page_index=item.data(Qt.ItemDataRole.UserRole)
             if page_index==7:item.setText("Brief")
             elif page_index==0:item.setText("Editor")
-            elif page_index==1:item.setText("Diff")
-            elif page_index==4:item.setText("Fix")
+            elif page_index==1:item.setText("Changes")
+            elif page_index==4:item.setText("Refactor")
             if page_index in {2,5}:item.setHidden(True)
+        lld_item=QListWidgetItem("Architecture");lld_item.setData(Qt.ItemDataRole.UserRole,8);lld_item.setSizeHint(QSize(120,34));self.nav.addItem(lld_item)
+        for nav_index in range(self.nav.count()):
+            item=self.nav.item(nav_index);page_index=item.data(Qt.ItemDataRole.UserRole)
+            if not item.isHidden():item.setSizeHint(QSize({6:74,0:82,1:88,3:72,4:94,7:74,8:116}.get(page_index,94),34))
         self.nav.currentRowChanged.connect(self.navigate_from_nav)
-        main.addWidget(self.nav)
+        main.insertWidget(0,self.nav)
         sidebar.setContentsMargins(10,8,8,8); sidebar.setSpacing(6)
         for item in self.project_panel.findChildren(QLabel):
             if item.text()=="WORKSPACE":item.hide()
@@ -165,37 +185,207 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.quick_button.setObjectName("commandSearch"); self.quick_button.setFixedWidth(280)
         header_row=header.layout()
         while header_row.count():header_row.takeAt(0)
-        identity=text("CHANGE LENS","identity"); header_row.addWidget(identity); header_row.addSpacing(14)
+        identity=text("Change Lens","identity"); header_row.addWidget(identity); header_row.addSpacing(14)
         header_row.addWidget(self.project_name); header_row.addStretch(1)
         files_button=action("Files",self.toggle_project); files_button.setObjectName("smallButton"); header_row.addWidget(files_button)
         header_row.addWidget(self.quick_button); header_row.addStretch(1)
         self.format_button=action("Format",self.format_current);self.format_button.setToolTip("Format document · Alt+Shift+F · review before applying");header_row.addWidget(self.format_button)
-        self.ai_button=action("Brief",self.open_brief); self.ai_button.setObjectName("smallButton"); header_row.addWidget(self.ai_button); header_row.addWidget(self.changes_button)
-        self.changes_button.setText("Follow changes"); self.changes_button.setIcon(QIcon()); self.changes_button.setObjectName("lensAction")
+        self.ai_button=action("Brief",self.open_brief); self.ai_button.setObjectName("smallButton"); self.ai_button.hide(); header_row.addWidget(self.changes_button)
+        self.changes_button.setText("Check changes"); self.changes_button.setIcon(QIcon()); self.changes_button.setObjectName("lensAction")
         self.changes_button.setToolTip("Save edits, choose the comparison automatically and review the results")
         self.breadcrumb=text("","breadcrumb")
-        self.breadcrumb.hide()
+        self.breadcrumb.setText("No file open"); self.breadcrumb.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); self.pages.widget(0).layout().insertWidget(0,self.breadcrumb)
         self.pages.widget(0).layout().setSpacing(0)
         for index in range(1,self.pages.count()):
             self.pages.widget(index).layout().setContentsMargins(14,12,14,10)
         welcome=self.findChild(QFrame,"welcome")
         for item in welcome.findChildren(QLabel):item.hide()
-        self.demo_button.setText("Open sample project")
+        self.demo_button.setText("Try a sample")
         # Keep the empty state restrained: a few discoverable keyboard actions.
         intro=welcome.layout()
         intro.insertWidget(1,text("Change Lens","emptyTitle"))
-        intro.insertWidget(2,text("Open folder                         Ctrl+O\nFind a file                             Ctrl+P\nShow commands                 Ctrl+Shift+P","welcomeText"))
+        intro.insertWidget(2,text("Open a project to edit code and review its changes.\nCtrl+P to find a file · Ctrl+Shift+P for commands","welcomeText"))
+        intro.insertWidget(3,action("Open folder",self.open_repository,True,"folder"),0,Qt.AlignmentFlag.AlignLeft)
         self.install_workbench_commands()
+        self.install_focus_shell(header,brand)
+
+    def install_focus_shell(self,header,brand):
+        self._tools_visible=False;self._files_visible=False;self.shell_header=header
+        header.hide();self.menuBar().hide();self.nav.hide();self.project_panel.hide()
+        for top in self.menuBar().actions():
+            if top.menu():
+                for item in top.menu().actions():
+                    if not item.shortcut().isEmpty():self.addAction(item)
+        strip=QFrame();row=QHBoxLayout(strip);row.setContentsMargins(7,0,7,0);strip.setFixedHeight(32)
+        row.addWidget(brand);brand.show()
+        self.workspace_context=text('Change Lens','muted');self.workspace_context.setWordWrap(False);self.workspace_context.setMaximumWidth(130);row.addWidget(self.workspace_context)
+        self.workspace_buttons={}
+        for index,label in [(0,'Editor'),(6,'Lens'),(REVIEW_PAGE,'Review'),(8,'Design')]:
+            button=QToolButton();button.setText(label);button.setCheckable(True);button.setStyleSheet('padding:4px 8px;');button.clicked.connect(lambda checked=False,i=index:self.navigate(i));row.addWidget(button);self.workspace_buttons[index]=button
+        row.addStretch(1)
+        self.common_buttons=[]
+        for label,callback in [('Open',self.open_repository),('Files',self.toggle_project),('Find',self.quick_open)]:
+            button=QToolButton();button.setText(label);button.setStyleSheet('padding:4px 8px;');button.clicked.connect(callback);row.addWidget(button);self.common_buttons.append(button)
+            if label=='Files':button.setCheckable(True)
+        self.quick_actions=QWidget();self.quick_actions_row=QHBoxLayout(self.quick_actions);self.quick_actions_row.setContentsMargins(0,0,0,0);self.quick_actions_row.setSpacing(4);row.addWidget(self.quick_actions)
+        self.options_button=QToolButton();self.options_button.setText('More');self.options_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.options_menu=QMenu(self);self.options_menu.aboutToShow.connect(self.build_options);self.options_button.setMenu(self.options_menu);row.addWidget(self.options_button)
+        self.centralWidget().layout().insertWidget(0,strip)
+        for label,shortcut,direction in [('Next edit','F7',1),('Previous edit','Shift+F7',-1)]:
+            item=QAction(label,self);item.setShortcut(QKeySequence(shortcut));item.triggered.connect(lambda checked=False,d=direction:self.current_editor().next_edit(d) if self.current_editor() else None);self.addAction(item)
+
+    def build_options(self):
+        menu=self.options_menu;menu.clear();go=menu.addMenu('Tools')
+        for index,title in [(1,'Saved changes'),(3,'Tests'),(4,'Refactor'),(7,'Code notes')]:
+            go.addAction(title+'…',lambda checked=False,i=index,t=title:self.open_tool_window(i,t))
+        menu.addAction('Commands…  Ctrl+Shift+P',self.command_palette);menu.addAction('Local models / context settings',self.show_model_settings)
+        if self.local_ai.last_context_report:menu.addAction('Inspect last model context',lambda:QMessageBox.information(self,'Model context',self.context_note()))
+        menu.addAction('Check changes',self.analyze_changes)
+        if self.pages.currentIndex()==0:
+            menu.addSeparator();menu.addAction('Save  Ctrl+S',self.save_current);menu.addAction('Review / revert edits',self.review_edits);menu.addAction('Format document',self.format_current);menu.addAction('Find in file  Ctrl+F',self.find_in_file);menu.addAction('Next edit  F7',lambda:self.current_editor().next_edit() if self.current_editor() else None);menu.addAction('Previous edit  Shift+F7',lambda:self.current_editor().next_edit(-1) if self.current_editor() else None)
+        if self.pages.currentIndex()==4:
+            refactor=menu.addMenu('Refactor');refactor.addAction('Preview / regenerate',self.preview);apply=refactor.addAction('Apply reviewed patch',self.apply_patch);apply.setEnabled(bool(self.patch) and not self.patch_stale and not self.worker);refactor.addAction('Export patch',self.export_patch)
+        if self.pages.currentIndex()==3:menu.addAction('Run selected tests',self.validate_demo)
+        if self.pages.currentIndex()==6:
+            lens=menu.addMenu('Lens');lens.addAction('Find component',lambda:self.lens_view.search.setFocus());lens.addAction('Readable trace map',lambda:self.lens_view.mode.setCurrentIndex(0));lens.addAction('Dependency layers',lambda:self.lens_view.mode.setCurrentIndex(1));lens.addAction('3D explorer',lambda:self.lens_view.mode.setCurrentIndex(2));lens.addAction('Fit map',self.lens_view.fit_map)
+        if self.pages.currentIndex()==8:
+            view=self.architecture_view;canvas=view.active_canvas();design=menu.addMenu('Design')
+            design.addAction('Review source project',self.generate_architecture);design.addAction('Export source report',self.export_architecture)
+            design.addAction('System & feature flows',lambda:view.tabs.setCurrentWidget(view.flows));design.addAction('Package dependencies',lambda:(view.tabs.setCurrentIndex(3),view.diagram_choice.setCurrentIndex(0)));design.addAction('Declarations & members',lambda:(view.tabs.setCurrentIndex(3),view.diagram_choice.setCurrentIndex(1)))
+            scopes=design.addMenu('Package')
+            for i in range(view.scope.count()):scopes.addAction(view.scope.itemText(i),lambda checked=False,n=i:view.scope.setCurrentIndex(n))
+            pages=design.addMenu('Page')
+            for i in range(view.diagram_page.count()):pages.addAction(view.diagram_page.itemText(i),lambda checked=False,n=i:view.diagram_page.setCurrentIndex(n))
+            for label,cb in [('Add card',lambda:canvas.add_node('class' if canvas.model and canvas.model['level']=='LLD' else 'package')),('Add note',lambda:canvas.add_node('note')),('Undo',canvas.history.undo),('Redo',canvas.history.redo),('Delete selected',canvas.delete_selected),('Reset page to source (undoable)',view.reset_active_design),('Show / hide inspector',lambda:canvas.inspector.setVisible(canvas.inspector.isHidden())),('Fit design',canvas.fit),('Save editable design',canvas.save_design),('Load editable design',canvas.load_design),('Export edited SVG',canvas.export_svg)]:design.addAction(label,cb)
+            sections=design.addMenu('Review views')
+            for i,label in enumerate(['Review queue','Code inventory','Dependencies','Code structure','System & feature flows','Analysis coverage']):sections.addAction(label,lambda checked=False,n=i:view.tabs.setCurrentIndex(n))
+        if self.pages.currentIndex()==7:
+            notes=menu.addMenu('Code notes');notes.addAction('Explain focused code',self.explain_code);notes.addAction('Suggest a change',self.suggest_rewrite);notes.addAction('Model / context settings',lambda:self.ai_settings.setVisible(self.ai_settings.isHidden()))
+        menu.addSeparator();tools=menu.addAction('Advanced controls');tools.setCheckable(True);tools.setChecked(self._tools_visible);tools.toggled.connect(self.set_page_tools)
+        for top in self.menuBar().actions():
+            if top.menu():menu.addMenu(top.menu())
+
+    def show_model_settings(self):
+        self.open_tool_window(7,'Local model settings');self.ai_settings.show()
+
+    def open_tool_window(self, index, title, *, focused_refactor=False):
+        if self.tool_window:
+            if self.tool_window.page_index == index and self.tool_window.focused_refactor == focused_refactor:
+                self.tool_window.raise_()
+                self.tool_window.activateWindow()
+                return
+            self.tool_window.close()
+        page = self.pages.widget(index)
+        if index not in self.tool_panes:
+            pane = QWidget()
+            pane.setLayout(page.layout())
+            host = QVBoxLayout(page)
+            host.setContentsMargins(0, 0, 0, 0)
+            host.addWidget(pane)
+            self.tool_panes[index] = pane
+        pane = self.tool_panes[index]
+        dialog = QDialog(self)
+        dialog.page_index = index
+        dialog.focused_refactor = focused_refactor
+        dialog.setWindowTitle(title)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        height = 220 if focused_refactor else 650
+        if index == 3 and self.validation_view.isHidden():height = 480
+        dialog.resize(min(720 if focused_refactor else 940, self.width()-32), min(height, self.height()-36))
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.addWidget(pane, 1)
+        if focused_refactor:
+            self.refactor_picker.hide()
+            self.refactor_intro.hide()
+            self.operation.hide()
+        row = QHBoxLayout()
+        dialog.status = text('', 'muted')
+        dialog.status.setTextFormat(Qt.TextFormat.PlainText)
+        if index in (1, 2, 3) and self.report_stale:
+            dialog.status.setText('This view shows the last analysis. Check changes to update it.')
+        row.addWidget(dialog.status, 1)
+        dialog.cancel_work = action('Cancel operation', self.cancel)
+        dialog.cancel_work.setVisible(self.worker is not None and self.patch_write_editors is None)
+        row.addWidget(dialog.cancel_work)
+        close = action('Close', dialog.reject)
+        close.setAutoDefault(False)
+        row.addWidget(close)
+        layout.addLayout(row)
+
+        def restore(_):
+            page.layout().addWidget(pane)
+            pane.show()
+            if focused_refactor:
+                self.refactor_picker.show()
+                self.refactor_intro.show()
+                self.operation.show()
+            self.tool_window = None
+
+        dialog.finished.connect(restore)
+        self.tool_window = dialog
+        dialog.show()
+        pane.show()
+        if index == 3 and self.validation_view.isHidden():self.test_split.setSizes([450, 110])
+
+    def set_page_tools(self,show):
+        self._tools_visible=show;self.lens_view.set_tools_visible(show);self.architecture_view.set_tools_visible(show)
+        self.lens_view.summary.show();self.lens_view.legend.show()
+        self.review_context.setVisible(show);self.breadcrumb.setVisible(show)
+        contextual=(self.patch_button,self.apply_test_button,self.undo_from_tests,self.model_instruction)
+        for page_index in (1,2,3,4,5):
+            page = self.tool_panes.get(page_index, self.pages.widget(page_index))
+            for child in page.findChildren(QWidget,options=Qt.FindChildOption.FindDirectChildrenOnly):
+                if child not in contextual and isinstance(child,(QPushButton,QLineEdit,QComboBox,QSpinBox,QCheckBox)):child.show()
+        advanced=show or self.comparison_advanced.isChecked()
+        self.comparison.setVisible(advanced);self.baseline_button.setVisible(advanced);self.train_button.setVisible(show)
+        generated=self.operation.currentData()=='ai_rewrite';self.old_name.setVisible(not generated);self.new_name.setVisible(not generated)
+        self.model_instruction.setVisible(generated and not self.qa_fix_request)
+        self.ai_heading.hide();self.ai_context_label.show();self.ai_settings_toggle.setVisible(show)
+        self.ai_explain.show();self.ai_rewrite.show()
+        for child in self.pages.widget(6).findChildren(QPushButton,options=Qt.FindChildOption.FindDirectChildrenOnly):child.show()
+        self.review_issue.setVisible(bool(self.snapshot and any(w.startswith(('Cannot parse','Skipped')) for w in self.snapshot.warnings)))
+
+    def populate_quick_actions(self,index):
+        if not hasattr(self,'quick_actions'):return
+        if getattr(self,'_quick_page',None)==index:return
+        self._quick_page=index
+        while self.quick_actions_row.count():
+            item=self.quick_actions_row.takeAt(0)
+            if item.widget():item.widget().hide();item.widget().deleteLater()
+        actions={0:[('Save',self.save_current),('Review edits',self.review_edits)],
+                 1:[('Check',self.analyze_changes)],2:[('Check',self.analyze_changes)],
+                 5:[],
+                 7:[('Models',self.show_model_settings)],8:[('Review',self.generate_architecture),('Export',self.export_architecture)]}
+        self.page_action_buttons={}
+        for label,callback in actions.get(index,[]):
+            button=QToolButton();button.setText(label);button.setStyleSheet('padding:4px 8px;');button.clicked.connect(callback);self.quick_actions_row.addWidget(button);button.show();self.page_action_buttons[label]=button
+
+
+    def update_shell(self):
+        if not hasattr(self,'workspace_context'):return
+        names=['Editor','Changes','Evidence','Tests','Refactor','Diagnostics','Lens','Code notes','Architecture','Review']
+        name=Path(self.snapshot.root).name if self.snapshot else 'Change Lens';doc=self.current_document()
+        detail=doc.path.relative_to(self.snapshot.root).as_posix() if doc and self.snapshot and self.pages.currentIndex()==0 else names[self.pages.currentIndex()]
+        self.workspace_context.setText(name);self.workspace_context.setToolTip(name+' / '+detail)
+        for page,button in self.workspace_buttons.items():button.setChecked(page==self.pages.currentIndex())
+        self.populate_quick_actions(self.pages.currentIndex());self.update_quick_action_state()
+        self.shell_header.hide();self.nav.hide();self.set_page_tools(self._tools_visible)
 
     def install_workbench_commands(self):
         self.commands=[("Project: Open folder",self.open_repository),("Project: Open sample",self.open_sample),("Project: Open web sample",self.open_web_sample),("Project: Open Flutter sample",self.open_flutter_sample),
             ("Project: Refresh index",self.reindex),("Project: Capture baseline",self.capture_baseline),
-            ("Editor: Save",self.save_current),("Editor: Find in file",self.find_in_file),("Search: Find in project",self.search_project),("Editor: Format document",self.format_current),
+            ("Editor: Review / revert edits",self.review_edits),("Editor: Save",self.save_current),("Editor: Find in file",self.find_in_file),("Search: Find in project",self.search_project),("Editor: Format document",self.format_current),
             ("Analysis: Analyze changes",self.analyze_changes),("Analysis: Analyze symbol under cursor",self.analyze_selected),
             ("Refactor: Preview rename",self.prepare_rename),("View: Toggle project panel",self.toggle_project),
             ("View: Toggle outline",self.toggle_outline)]
         self.commands.insert(0,("Project: Check project",self.analyze_changes))
-        self.commands.extend([("AI: Complete code locally",self.request_ai_completion),("AI: Explain current code",self.explain_code),("AI: Suggest improvement",self.suggest_rewrite)])
+        self.commands.extend([("Review: Saved changes",self.review_saved),
+                              ("Review: Function under cursor",lambda:self.review_saved("function")),
+                              ("Review: Current file",lambda:self.review_saved("file")),
+                              ("Refactor: Undo applied patch",self.undo_patch)])
+        self.commands.extend([("AI: Complete code locally",self.request_ai_completion),("AI: Explain current code",self.explain_code),("AI: Review focused code",self.review_code),("AI: Suggest improvement",self.suggest_rewrite)])
         menu=self.menuBar().addMenu("View")
         from PySide6.QtWidgets import QApplication
         try:reduce=bool(json.loads((app_dir()/'appearance.json').read_text(encoding='utf-8')).get('reduce_motion',False))
@@ -210,13 +400,14 @@ class MainWindow(AIWorkbench,QMainWindow):
                 ("Toggle project panel","Ctrl+B",self.toggle_project),("Toggle outline","Ctrl+Shift+O",self.toggle_outline),
                 ("Return to code","Ctrl+1",lambda:self.navigate(0))]:
             item=QAction(title,self); item.setShortcut(QKeySequence(shortcut)); item.triggered.connect(callback); menu.addAction(item)
-        for index,title in enumerate(["Editor","Diff","Evidence table","Tests","Fix","Diagnostics","Lens","Brief"]):
+        for index,title in enumerate(["Editor","Changes","Evidence table","Tests","Refactor","Diagnostics","Lens","Brief","Architecture","Review"]):
             callback=lambda checked=False,i=index:self.navigate(i)
             item=QAction(title,self); item.triggered.connect(callback); menu.addAction(item)
             self.commands.append(("View: "+title,callback))
 
     def toggle_project(self):
-        self.project_panel.setVisible(self.project_panel.isHidden())
+        self._files_visible=not self._files_visible;self.project_panel.setVisible(self._files_visible)
+        if hasattr(self,'common_buttons'):self.common_buttons[1].setChecked(self._files_visible)
 
     def navigate_from_nav(self,row):
         if row>=0:self.navigate(self.nav.item(row).data(Qt.ItemDataRole.UserRole))
@@ -263,13 +454,13 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.editor_tabs.currentChanged.connect(self.editor_changed); self.editor_tabs.tabCloseRequested.connect(self.close_document); col.addWidget(self.editor_tabs,1)
         self.editor_stack.addWidget(panel); split.addWidget(self.editor_stack)
         detail,inspector=column(QFrame(),16); detail.setObjectName("inspector"); detail.setMinimumWidth(215); detail.setMaximumWidth(300)
-        inspector.addWidget(text("CODE INTELLIGENCE","eyebrow")); inspector.addWidget(text("Understand this symbol","sectionTitle"))
+        inspector.addWidget(text("OUTLINE","eyebrow")); inspector.addWidget(text("Understand this symbol","sectionTitle"))
         self.symbols=QComboBox(); self.symbols.setMinimumContentsLength(12); self.symbols.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.symbols.activated.connect(lambda:self.select_symbol(self.symbols.currentData())); inspector.addWidget(self.symbols)
         self.selected_button=action("Analyze symbol",self.analyze_selected,True,"impact"); inspector.addWidget(self.selected_button)
         self.symbol_info=text("Choose a function or class in the explorer.","muted"); inspector.addWidget(self.symbol_info); inspector.addSpacing(14)
-        inspector.addWidget(text("REFACTORING IDEAS","eyebrow")); self.ideas=QListWidget(); self.ideas.setWordWrap(True); self.ideas.itemClicked.connect(self.idea_clicked); inspector.addWidget(self.ideas,1)
-        inspector.addWidget(text("LOCAL COMPLETION","eyebrow")); inspector.addWidget(text("Ctrl+Space suggests names, attributes and imports. Enter or Tab accepts a suggestion.","muted"))
+        inspector.addWidget(text("Suggestions","eyebrow")); self.ideas=QListWidget(); self.ideas.setWordWrap(True); self.ideas.itemClicked.connect(self.idea_clicked); inspector.addWidget(self.ideas,1)
+        inspector.addWidget(text("Completion","eyebrow")); inspector.addWidget(text("Ctrl+Space suggests names, attributes and imports. Enter or Tab accepts a suggestion.","muted"))
         inspector.addSpacing(10); inspector.addWidget(text("SHORTCUTS","eyebrow")); inspector.addWidget(text("Ctrl+S  Save\nCtrl+F  Find in file\nF2  Preview rename","muted"))
         split.addWidget(detail); split.setSizes([800,260]); split.setStretchFactor(0,1); layout.addWidget(split); self.pages.addWidget(page)
 
@@ -290,9 +481,11 @@ class MainWindow(AIWorkbench,QMainWindow):
         split.setSizes([570,490]); layout.addWidget(split,1); self.export_button=action("Export analysis…",self.export_report); layout.addWidget(self.export_button,0,Qt.AlignmentFlag.AlignRight); self.pages.addWidget(page)
 
     def build_tests(self):
-        page,layout=column(); row=QHBoxLayout(); self.test_summary=text("Recommendations explain their evidence. Choose which tests to run.","muted"); row.addWidget(self.test_summary,1)
-        self.show_weak=QCheckBox("Include name-only / weak matches"); self.show_weak.toggled.connect(self.populate_tests); row.addWidget(self.show_weak); layout.addLayout(row)
-        split=QSplitter(Qt.Orientation.Vertical); self.test_table=QTableWidget(0,4); self.test_table.setHorizontalHeaderLabels(["Test","Evidence","Score","Run"])
+        page,layout=column(); row=QHBoxLayout(); self.test_summary=text("Choose the tests you want to run.","muted"); row.addWidget(self.test_summary,1)
+        self.show_weak=QCheckBox("Show other tests"); self.show_weak.toggled.connect(self.populate_tests); row.addWidget(self.show_weak); layout.addLayout(row)
+        split=QSplitter(Qt.Orientation.Vertical); self.test_split=split
+        self.test_table=QTableWidget(0,4); self.test_table.setHorizontalHeaderLabels(["Test","Why it was suggested","Rank score","Run"])
+        self.test_table.setColumnHidden(2,True)
         self.test_table.itemChanged.connect(self.test_choice_changed)
         self.test_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows); self.test_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers); self.test_table.verticalHeader().hide(); self.test_table.setShowGrid(False); self.test_table.setAlternatingRowColors(True)
         self.test_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents); self.test_table.horizontalHeader().setSectionResizeMode(0,QHeaderView.ResizeMode.Stretch); self.test_table.cellClicked.connect(self.show_test_features); split.addWidget(self.test_table)
@@ -300,30 +493,54 @@ class MainWindow(AIWorkbench,QMainWindow):
         tools=QHBoxLayout(); self.interpreter=QLineEdit(); self.interpreter.setPlaceholderText("Python interpreter or node.exe (project dependencies required)"); tools.addWidget(self.interpreter,1); self.interpreter_browse=action("Browse…",self.choose_interpreter); tools.addWidget(self.interpreter_browse)
         self.timeout=QSpinBox(); self.timeout.setRange(10,3600); self.timeout.setValue(120); self.timeout.setSuffix(" s"); tools.addWidget(self.timeout)
         self.test_advanced=QCheckBox("Advanced run options"); tools.addWidget(self.test_advanced)
+        self.test_advanced.toggled.connect(lambda shown:self.test_table.setColumnHidden(2,not shown))
+        self.test_advanced.toggled.connect(self.refresh_actions)
         for widget in (self.interpreter,self.interpreter_browse,self.timeout):widget.hide(); self.test_advanced.toggled.connect(widget.setVisible)
         tools.addStretch()
-        self.validate_button=action("Run selected tests",self.check_and_run,True,"test"); tools.addWidget(self.validate_button)
+        self.validate_button=action("Run selected tests",self.validate_demo,True,"test"); tools.addWidget(self.validate_button)
+        self.undo_from_tests=action("Undo applied patch",lambda:self.undo_patch(stay_here=True)); tools.addWidget(self.undo_from_tests)
         self.mutate_button=action("Demo fault check",lambda:self.validate_demo(True)); tools.addWidget(self.mutate_button); col.addLayout(tools)
         self.run_summary=text("Not run · Tests execute saved source, not preview patches.","muted"); col.addWidget(self.run_summary)
         self.validation_view=QPlainTextEdit(); self.validation_view.setReadOnly(True); self.validation_view.setObjectName("terminal"); self.validation_view.setFont(QFont("Noto Sans Mono",10)); col.addWidget(self.validation_view,1)
+        self.validation_view.hide()
         split.addWidget(bottom); split.setSizes([350,280]); layout.addWidget(split,1); self.pages.addWidget(page)
 
     def build_refactor(self):
-        page,layout=column(); layout.addWidget(text("Place the editor cursor on a name, or select code to extract. Review the resulting patch before applying it.","muted"))
+        page,layout=column()
+        self.refactor_picker=QWidget(); start_row=QHBoxLayout(self.refactor_picker)
+        start_row.setContentsMargins(0,0,0,0)
+        start_row.addWidget(text("Refactor a function","lensTitle"),1)
+        self.refactor_choose=action("Choose function…",self.choose_refactor_function,True)
+        self.refactor_sample=action("Try a sample rename",self.try_refactor_sample)
+        start_row.addWidget(self.refactor_choose); start_row.addWidget(self.refactor_sample)
+        layout.addWidget(self.refactor_picker)
+        self.refactor_intro=text("Open a project or try the sample rename.","muted")
+        layout.addWidget(self.refactor_intro)
+        self.refactor_workspace,details=column()
+        layout.addWidget(self.refactor_workspace,1)
+        self.refactor_empty=QWidget()
+        layout.addWidget(self.refactor_empty,1)
         row=QHBoxLayout(); self.operation=QComboBox()
-        for title,value in [("Rename symbol across files","rename"),("Extract helper from selection","extract_method"),("Extract variable from expression","extract_variable")]:self.operation.addItem(title,value)
-        self.operation.addItem("Local AI suggested improvement","ai_rewrite")
+        for title,value in [("Rename across files","rename"),("Extract helper from selection","extract_method"),("Extract variable from expression","extract_variable")]:self.operation.addItem(title,value)
+        self.operation.addItem("Improve with local AI","ai_rewrite")
         row.addWidget(self.operation,1); self.old_name=QLineEdit(); self.old_name.setReadOnly(True); self.old_name.setPlaceholderText("Name under cursor"); row.addWidget(self.old_name)
         self.new_name=QLineEdit(); self.new_name.setPlaceholderText("New name…"); row.addWidget(self.new_name)
         self.new_name.textEdited.connect(self.schedule_preview)
+        self.new_name.returnPressed.connect(self.preview)
         self.operation.activated.connect(self.schedule_preview)
-        self.preview_button=action("Preview changes",self.preview,True,"refactor"); row.addWidget(self.preview_button); self.patch_button=action("Export patch…",self.export_patch); row.addWidget(self.patch_button); layout.addLayout(row)
+        self.preview_button=action("Preview changes",self.preview,True,"refactor"); row.addWidget(self.preview_button); self.patch_button=action("Export patch…",self.export_patch); row.addWidget(self.patch_button); details.addLayout(row)
         self.operation.currentIndexChanged.connect(self.refactor_mode_changed)
-        apply_row=QHBoxLayout(); apply_row.addWidget(text("Original files stay unchanged until you apply a reviewed preview. A recovery backup is saved first.","muted"),1)
-        self.apply_button=action("Apply reviewed patch",self.apply_patch,True,"test"); apply_row.addWidget(self.apply_button); layout.addLayout(apply_row)
-        self.refactor_context=text("Open a Python file in the editor first.","muted"); layout.addWidget(self.refactor_context)
+        self.model_instruction=QLineEdit();self.model_instruction.setPlaceholderText('What should improve? For example, simplify the nested conditions.');self.model_instruction.hide();details.addWidget(self.model_instruction)
+        self.model_instruction.returnPressed.connect(self.preview)
+        self.patch_controls=QWidget(); apply_row=QHBoxLayout(self.patch_controls)
+        apply_row.setContentsMargins(0,0,0,0); apply_row.addStretch()
+        self.apply_button=action("Apply reviewed patch",self.apply_patch,True,"test"); apply_row.addWidget(self.apply_button)
+        self.apply_test_button=action("Apply and run linked tests",lambda:self.apply_patch(run_tests=True))
+        apply_row.addWidget(self.apply_test_button); details.addWidget(self.patch_controls)
+        self.refactor_context=text("Choose a function or open code in the editor.","muted"); self.refactor_context.setTextFormat(Qt.TextFormat.PlainText); details.addWidget(self.refactor_context)
+        self.patch_checks=text("","muted"); self.patch_checks.setTextFormat(Qt.TextFormat.PlainText); details.addWidget(self.patch_checks)
         split=QSplitter(Qt.Orientation.Horizontal); self.patch_list=QListWidget(); self.patch_list.setMaximumWidth(260); self.patch_list.currentRowChanged.connect(self.show_patch_file); split.addWidget(self.patch_list)
-        self.diff_view=DiffViewer(); split.addWidget(self.diff_view); split.setSizes([220,840]); split.setStretchFactor(1,1); layout.addWidget(split,1); self.pages.addWidget(page)
+        self.diff_view=DiffViewer(before_label="CURRENT CODE",after_label="PROPOSED EDIT"); split.addWidget(self.diff_view); split.setSizes([220,840]); split.setStretchFactor(1,1); details.addWidget(split,1); self.patch_comparison=split; self.pages.addWidget(page)
 
     def build_diagnostics(self):
         page,layout=column(); self.diagnostic_summary=text("Analysis issues and unsupported relationships appear here.","muted"); layout.addWidget(self.diagnostic_summary)
@@ -334,6 +551,10 @@ class MainWindow(AIWorkbench,QMainWindow):
 
     def build_review(self):
         page,layout=column(); layout.setSpacing(18)
+        entry=QHBoxLayout()
+        for label,callback in [('Explore a feature',lambda:self.navigate(8)),('Review my changes',self.analyze_changes),('Improve selected code',self.suggest_rewrite)]:entry.addWidget(action(label,callback))
+        entry.addStretch();layout.addLayout(entry)
+        self.feature_review=QComboBox();self.feature_review.setPlaceholderText('Potentially affected features');self.feature_review.activated.connect(self.open_affected_feature);layout.addWidget(self.feature_review);self.feature_review.hide()
         self.review_title=text("CHANGE INVESTIGATION","eyebrow"); self.review_title.hide()
         self.review_context=text("Comparison setup and test selection are automatic.","muted"); layout.addWidget(self.review_context)
         self.review_detail=text("","sectionTitle"); self.review_detail.hide()
@@ -343,15 +564,15 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.lens_view.codeRequested.connect(lambda sid:(self.select_symbol(sid),self.navigate(0)))
         self.lens_view.explainRequested.connect(self.explain_impact)
         layout.addWidget(self.lens_view,1)
-        row=QHBoxLayout(); self.review_diff=action("Read diffs",lambda:self.navigate(1)); row.addWidget(self.review_diff)
-        self.review_tests=action("Run linked tests",self.check_and_run,True); row.addWidget(self.review_tests)
+        row=QHBoxLayout(); self.review_diff=action("Saved diffs…",lambda:self.open_tool_window(1,'Saved changes')); row.addWidget(self.review_diff)
+        self.review_tests=action("Linked tests…",self.review_linked_tests,True); row.addWidget(self.review_tests)
         self.review_tests.setObjectName("lensAction")
-        row.addWidget(action("Evidence table",lambda:self.navigate(2))); row.addStretch(); layout.addLayout(row)
+        row.addWidget(action("Evidence…",lambda:self.open_tool_window(2,'Impact evidence'))); row.addStretch(); layout.addLayout(row)
         self.review_issue=action("Inspect source issues",lambda:self.navigate(5)); self.review_issue.hide(); layout.addWidget(self.review_issue)
         self.review_items=QTreeWidget(page); self.review_items.setHeaderLabels(["What needs attention","Details"])
         self.review_items.header().setSectionResizeMode(0,QHeaderView.ResizeMode.Stretch)
         self.review_items.itemActivated.connect(self.review_item_opened); self.review_items.hide()
-        self.review_tests.setToolTip("Analyze the focused function if needed, then run its selected tests. Repository trust is required on first execution.")
+        self.review_tests.setToolTip("Inspect the tests linked to this Lens view before choosing what to run.")
         self.pages.addWidget(page)
 
     def populate_review(self):
@@ -372,6 +593,10 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.comparison_note.setText(description)
         self.review_detail.setText(f"{changed} changed files · {summary['affected_symbols']} potentially affected symbols · {summary['recommended_tests']} recommended tests")
         self.review_items.clear()
+        self.feature_review.blockSignals(True);self.feature_review.clear()
+        for feature in report.get('affected_features',[]):
+            self.feature_review.addItem(feature['app']+' / '+feature['screen']+' · '+feature['title'],feature['id'])
+        self.feature_review.setCurrentIndex(-1);self.feature_review.blockSignals(False);self.feature_review.setVisible(self.feature_review.count()>0)
         for row in report["changes"]["files"]:
             item=QTreeWidgetItem(self.review_items,[row["path"],row["status"]]); item.setData(0,Qt.ItemDataRole.UserRole,("change",row["path"]))
         for sid in report["possible_gaps"]:
@@ -383,6 +608,7 @@ class MainWindow(AIWorkbench,QMainWindow):
         issues=sum(warning.startswith(("Cannot parse","Skipped")) for warning in report["warnings"])
         self.review_issue.setVisible(bool(issues)); self.review_issue.setText(f"{issues} source issues need attention — inspect diagnostics")
         self.lens_view.set_report(self.snapshot,report)
+        if hasattr(self,"_tools_visible"):self.set_page_tools(self._tools_visible)
         linked=bool(self.lens_view.linked_tests)
         self.review_tests.setEnabled(bool(summary["recommended_tests"]) or linked)
 
@@ -392,6 +618,37 @@ class MainWindow(AIWorkbench,QMainWindow):
             self.change_list.setCurrentRow(next(i for i,row in enumerate(self.change_rows) if row["path"]==value)); self.navigate(1)
         elif kind=="symbol":self.select_symbol(value); self.navigate(0)
         else:self.navigate(5)
+
+    def open_affected_feature(self,index):
+        key=self.feature_review.itemData(index)
+        self._pending_feature=key;self.navigate(8)
+        if self.architecture_view.report and self.architecture_view.report['snapshot_id']==self.snapshot.id:self.show_pending_feature()
+
+    def show_pending_feature(self):
+        key=getattr(self,'_pending_feature',None)
+        flows=self.architecture_view.flows
+        if key and key in getattr(flows,'by_id',{}):
+            self.architecture_view.tabs.setCurrentWidget(flows);flows.open_flow(flows.by_id[key],True);self._pending_feature=None
+
+    def review_linked_tests(self):
+        if not self.snapshot or self.worker:
+            return
+        focused = self.lens_view.focus.currentData()
+
+        def show_tests():
+            linked = set(self.lens_view.linked_tests)
+            self.test_choices = {row['symbol']: row['symbol'] in linked for row in self.report['tests']}
+            self.populate_tests()
+            self.open_tool_window(3, 'Linked tests')
+
+        needs_check = self.report_stale or not self.report
+        if not needs_check and focused in self.snapshot.symbols:
+            needs_check = focused not in self.report['changes']['seeds']
+        if needs_check:
+            seeds = [focused] if focused in self.snapshot.symbols else None
+            self.analyze(seeds, show_review=False, after_analysis=show_tests)
+        else:
+            show_tests()
 
     def check_and_run(self):
         if self.worker:return
@@ -410,10 +667,12 @@ class MainWindow(AIWorkbench,QMainWindow):
             self.validate_demo(False)
 
     def build_menu(self):
-        for menu_name,items in [("File",[("Open folder…","Ctrl+O",self.open_repository),("Save","Ctrl+S",self.save_current),("Save all","Ctrl+Shift+S",self.save_all)]),("Edit",[("Find in file","Ctrl+F",self.find_in_file),("Format document","Alt+Shift+F",self.format_current),("Complete Python","Ctrl+Space",self.request_completion),("Preview rename","F2",self.prepare_rename)])]:
+        for menu_name,items in [("File",[("Open folder…","Ctrl+O",self.open_repository),("Save","Ctrl+S",self.save_current),("Save all","Ctrl+Shift+S",self.save_all)]),("Edit",[("Find in file","Ctrl+F",self.find_in_file),("Format document","Alt+Shift+F",self.format_current),("Complete code","Ctrl+Space",self.request_completion),("Preview rename","F2",self.prepare_rename)])]:
             menu=self.menuBar().addMenu(menu_name)
             for title,shortcut,callback in items:
                 item=QAction(title,self); item.setShortcut(QKeySequence(shortcut)); item.triggered.connect(callback); menu.addAction(item)
+        for label, method in [('Toggle line comment   Ctrl+/', 'toggle_comment'), ('Duplicate line or selection   Ctrl+Shift+D', 'duplicate_text'), ('Increase editor font   Ctrl++', 'zoom_in'), ('Decrease editor font   Ctrl+-', 'zoom_out'), ('Reset editor font   Ctrl+0', 'zoom_reset')]:
+            item=QAction(label,self);item.triggered.connect(lambda checked=False,m=method: getattr(self.current_editor(),m)() if self.current_editor() else None);menu.addAction(item)
         for title,shortcut,callback in [('Search project','Ctrl+Shift+F',lambda:self.search_project()),('Next match','F3',self.find_next),('Previous match','Shift+F3',lambda:self.find_panel.step(-1))]:
             item=QAction(title,self);item.setShortcut(QKeySequence(shortcut));item.triggered.connect(callback);menu.addAction(item)
 
@@ -424,23 +683,32 @@ class MainWindow(AIWorkbench,QMainWindow):
 
     def navigate(self,index):
         if not hasattr(self,"pages") or index<0:return
+        if self.tool_window:self.tool_window.close()
+        if index!=0:self.dismiss_inline_refactor()
+        if self.pages.currentIndex()!=index and hasattr(self,"_tools_visible"):self._tools_visible=False
         self.pages.setCurrentIndex(index)
-        self.position.setVisible(index not in {6,7})
+        self.position.setVisible(index not in {6,7,8,REVIEW_PAGE})
         if hasattr(self,"project_panel"):
-            if index in {6,7}:self.project_panel.hide()
-            elif index==0:self.project_panel.setVisible(self.snapshot is not None)
+            if index in {6,7,8,REVIEW_PAGE}:self.project_panel.hide()
+            elif index==0:self.project_panel.setVisible(self.snapshot is not None and getattr(self,"_files_visible",False))
         self.nav.blockSignals(True)
         for nav_index in range(self.nav.count()):
             if self.nav.item(nav_index).data(Qt.ItemDataRole.UserRole)==index:self.nav.setCurrentRow(nav_index); break
         self.nav.blockSignals(False)
         self.nav.glide_to_current()
-        titles=[("Editor","Write and explore with offline Python intelligence."),("Change review","Read old and new code side by side."),("Impact analysis","Follow evidence from changed code to potential callers."),("Test runner","Choose relevant tests and inspect actual results."),("Refactoring","Preview structural changes across your project."),("Diagnostics","Inspect analysis limits and model status."),("Review","Your project check and next steps."),("Assistant","Local coding models.")]
-        self.title.setText(titles[index][0]); self.subtitle.setText(titles[index][1])
+        titles=[("Editor","Explore code with local analysis and optional coding models."),("Change review","Read old and new code side by side."),("Impact analysis","Follow evidence from changed code to potential callers."),("Test runner","Choose relevant tests and inspect actual results."),("Refactoring","Preview structural changes across your project."),("Diagnostics","Inspect analysis limits and model status."),("Review","Your project check and next steps."),("Assistant","Local coding models."),("Architecture","Static architecture review and implementation LLD.")]
+        title,subtitle=("Review","Inspect saved code, linked tests and refactor opportunities.") if index==REVIEW_PAGE else titles[index]
+        self.title.setText(title); self.subtitle.setText(subtitle)
         if index==4:self.update_refactor_context()
+        if index==8 and self.snapshot and (not self.architecture_view.report or self.architecture_view.report["snapshot_id"]!=self.snapshot.id):
+            QTimer.singleShot(0,self.generate_architecture)
         if hasattr(self,'format_button'):self.format_button.setVisible(index==0 and self.current_document() is not None)
+        self.update_shell()
 
     def notify(self,message,error=False):
         self.status.setText(message.splitlines()[0][:180]); self.banner.setText(message); self.banner.setVisible(error)
+        if self.tool_window:
+            self.tool_window.status.setText(message)
 
     def refresh_actions(self):
         busy=self.worker is not None; opened=self.snapshot is not None
@@ -451,50 +719,130 @@ class MainWindow(AIWorkbench,QMainWindow):
         if hasattr(self,'format_button'):
             self.format_button.setVisible(self.pages.currentIndex()==0 and document is not None)
             self.format_button.setEnabled(bool(editor and document and not editor.isReadOnly() and formatter_for(document.path)) and not busy)
-        if self.current_document() and language_for(self.current_document().path)!="python" and self.operation.currentData()!='ai_rewrite':
-            self.preview_button.setEnabled(False); self.preview_button.setToolTip("Select Local AI suggested improvement for a reviewed proposal in this language. Structural rename/extract is Python-only.")
+        if document and not structural_refactoring(document.path) and self.operation.currentData()!='ai_rewrite':
+            self.preview_button.setEnabled(False); self.preview_button.setToolTip("Rename and extract are available for Python, JavaScript and TypeScript.")
         else:self.preview_button.setToolTip("")
         if self.operation.currentData()=='ai_rewrite' and getattr(self,'ai_worker',None):self.preview_button.setEnabled(False)
         self.patch_button.setEnabled(self.patch is not None and not self.patch_stale and not busy); self.apply_button.setEnabled(self.patch is not None and not self.patch_stale and not busy); self.export_button.setEnabled(self.report is not None and not busy)
+        self.patch_button.setVisible(bool(self.patch))
+        self.patch_controls.setVisible(bool(self.patch))
+        self.patch_comparison.setVisible(bool(self.patch))
+        self.patch_checks.setVisible(bool(self.patch))
+        self.refactor_choose.setEnabled(opened and not busy)
+        self.refactor_sample.setEnabled(not busy)
+        show_refactor=bool(self.patch or (document and language_for(document.path)))
+        self.refactor_workspace.setVisible(show_refactor)
+        self.refactor_empty.setVisible(not show_refactor)
+        self.refactor_intro.setText("Choose a function, or select the code to extract in the editor."
+                                    if show_refactor else "Choose a function or try the sample in a practice project."
+                                    if opened else "Open a project to choose your own function, or try a sample rename.")
+        self.apply_test_button.setVisible(bool(self.patch and execution_family(self.snapshot,self.patch.get("linked_tests",[]))))
+        self.apply_test_button.setEnabled(self.apply_button.isEnabled())
+        self.undo_from_tests.setVisible(bool(opened and self.applied_patch and self.applied_patch["root"]==self.snapshot.root))
+        self.undo_from_tests.setEnabled(not busy)
         executable=execution_family(self.snapshot,self.checked_tests())
         self.validate_button.setEnabled(bool(executable) and not self.report_stale and not busy); self.train_button.setEnabled(not busy)
+        if hasattr(self,'architecture_view'):
+            self.architecture_view.generate.setEnabled(opened and not busy)
+            self.architecture_view.export.setEnabled(opened and bool(self.architecture_view.report) and not busy)
         self.validate_button.setToolTip("Runs selected Python tests, JS/TS files/filters, or Flutter test files with prepared SDK/dependencies. Repository trust is required.")
-        self.mutate_button.setVisible(opened and Path(self.snapshot.root)==(resources()/"demo").resolve()); self.mutate_button.setEnabled(self.report is not None and not self.report_stale and not busy)
+        self.mutate_button.setVisible(self.test_advanced.isChecked() and opened and Path(self.snapshot.root)==(resources()/"demo").resolve()); self.mutate_button.setEnabled(self.report is not None and not self.report_stale and not busy)
+        self.update_quick_action_state()
         if hasattr(self,"review_tests"):
             linked=bool(self.report and self.lens_view.linked_tests)
             self.review_tests.setEnabled(bool(self.report and linked and execution_family(self.snapshot,list(self.lens_view.linked_tests))) and not busy)
-            self.review_tests.setToolTip("Python, JS/TS and prepared Flutter test execution. Other languages currently provide structural recommendations.")
+        self.update_qa_actions()
+
+    def update_quick_action_state(self):
+        if not hasattr(self,'page_action_buttons'):return
+        busy=self.worker is not None;opened=self.snapshot is not None
+        if hasattr(self,'common_buttons'):
+            self.common_buttons[0].setEnabled(not busy);self.common_buttons[1].setEnabled(opened);self.common_buttons[1].setChecked(self.project_panel.isVisible());self.common_buttons[2].setEnabled(opened)
+        for label,button in self.page_action_buttons.items():
+            enabled=not busy
+            if label in {'Check','Review','Run tests'}:enabled=enabled and opened
+            if label in {'Save','Review edits'}:enabled=enabled and self.current_document() is not None
+            if label=='Apply':enabled=enabled and bool(self.patch) and not self.patch_stale
+            if label=='Export':enabled=enabled and bool(self.architecture_view.report)
+            if label=='Preview':enabled=enabled and self.current_document() is not None and not self.ai_worker
+            if label=='Run tests':enabled=enabled and self.validate_button.isEnabled()
+            if label=='Save':enabled=enabled and self.current_editor() is not None and not self.current_editor().isReadOnly()
+            button.setEnabled(enabled)
 
     def update_result_state(self):
         if self.report and self.report["snapshot"] != self.snapshot.id:self.report_stale=True
         messages=[]
-        if self.report_stale and self.report:messages.append("Code changed. Checks refresh after you save, or use Check project now.")
+        if self.report_stale and self.report and not self.pending_check:
+            messages.append("Saved analysis is out of date. Save your edits or choose Check changes.")
         if self.patch_stale and self.patch:messages.append("Refactoring preview needs a refresh before Apply.")
+        if self.report_stale and self.report and (self.report.get("test_run") or self.report.get("demo_validation")):
+            self.run_summary.setText("Previous test result · saved-source snapshot needs a refresh.")
+        if not self.patch:self.patch_checks.clear()
+        self.apply_button.setText("Apply this fix" if self.patch and self.patch.get("finding_title")
+                                  else "Apply reviewed patch")
         self.result_state.setText(" ".join(messages)); self.result_state.setVisible(bool(messages))
         self.refresh_actions()
 
     def invalidate_results(self):
+        if hasattr(self,'architecture_view') and self.architecture_view.report:
+            self.architecture_view.status.setText('Editor changed since review. The report covers saved source only; save and review again for the current design.')
         self.report_stale=bool(self.report); self.patch_stale=bool(self.patch)
         self.update_result_state()
 
-    def start(self,task,callback,stream=False):
+    def start(self,task,callback,stream=False, *, on_error=None, quiet=False):
         if self.worker is not None:return
-        self._pending_result=self._pending_error=None; self.banner.hide(); self.progress.setRange(0,0); self.progress.show(); self.cancel_button.show()
+        self._pending_result=self._pending_error=None
+        if not quiet:
+            self.banner.hide(); self.progress.setRange(0,0); self.progress.show(); self.cancel_button.show()
+            if self.tool_window:
+                self.tool_window.cancel_work.setVisible(self.patch_write_editors is None)
         self.worker=Worker(task,self)
-        self.worker.message.connect(lambda message:self.validation_view.setPlainText(message) if stream else self.status.setText(message[:160]))
-        self.worker.done.connect(lambda result:setattr(self,"_pending_result",result)); self.worker.failed.connect(lambda error:setattr(self,"_pending_error",error)); self.worker.finished.connect(lambda:self.finish(callback))
+        self.worker.workspace_epoch=getattr(self,'_workspace_epoch',0)
+        if not quiet:
+            def show_progress(message):
+                if stream:
+                    self.validation_view.setPlainText(message)
+                else:
+                    self.status.setText(message[:160])
+                    if self.tool_window:self.tool_window.status.setText(message[:160])
+            self.worker.message.connect(show_progress)
+        self.worker.done.connect(lambda result:setattr(self,"_pending_result",result)); self.worker.failed.connect(lambda error:setattr(self,"_pending_error",error)); self.worker.finished.connect(lambda:self.finish(callback,on_error))
         self.refresh_actions(); self.worker.start()
 
-    def finish(self,callback):
+    def finish(self,callback,on_error=None):
         worker=self.worker; self.worker=None; worker.deleteLater(); self.progress.hide(); self.cancel_button.hide()
-        if self._pending_error:self.notify(self._pending_error,True)
+        if self.tool_window:self.tool_window.cancel_work.hide()
+        if self.patch_write_editors is not None:
+            for editor, read_only in self.patch_write_editors.items():
+                if editor in self.documents:editor.setReadOnly(read_only)
+            self.patch_write_editors=None
+        if worker.workspace_epoch!=getattr(self,'_workspace_epoch',0):pass
+        elif worker.cancel.is_set():
+            self.notify("Operation cancelled.")
+            if on_error:on_error("Operation cancelled.")
+            if self.pages.currentIndex()==3 or (self.tool_window and self.tool_window.page_index==3):self.run_summary.setText("Test run cancelled.")
+        elif self._pending_error:
+            self.notify(self._pending_error,True)
+            if on_error:on_error(self._pending_error)
+            if self.pages.currentIndex()==3 or (self.tool_window and self.tool_window.page_index==3):self.run_summary.setText(self._pending_error)
         else:
             try:callback(self._pending_result)
-            except Exception as exc:self.notify(str(exc),True)
+            except Exception as exc:
+                self.notify(str(exc),True)
+                if on_error:on_error(str(exc))
         self.refresh_actions()
+        pending=getattr(self,'_pending_repository',None)
+        if pending:
+            self._pending_repository=None
+            path,on_open=pending
+            self.open_path(path,on_open=on_open)
+            return
+        if getattr(self,'_pending_architecture',False):
+            self._pending_architecture=False;QTimer.singleShot(0,self.generate_architecture)
         if self.pending_check and self.worker is None:self.check_timer.start()
 
     def cancel(self):
+        if self.patch_write_editors is not None:return
         self.pending_check=False; self.check_timer.stop(); self.preview_timer.stop()
         if self.worker:self.worker.cancel.set(); self.status.setText("Cancelling…")
 
@@ -508,14 +856,14 @@ class MainWindow(AIWorkbench,QMainWindow):
         path=QFileDialog.getExistingDirectory(self,"Open source workspace")
         if path:self.open_path(Path(path))
 
-    def open_sample(self):
+    def open_sample(self, *, on_open=None, practice=False):
         import shutil
-        root=app_dir()/"sample-project"
+        root=app_dir()/("refactor-practice" if practice else "sample-project")
         root.mkdir(parents=True,exist_ok=True)
         for filename in json.loads((resources()/"demo_manifest.json").read_text(encoding="utf-8")):
             target=root/filename
             if not target.exists():shutil.copy2(resources()/"demo"/filename,target)
-        self.open_path(root)
+        self.open_path(root,on_open=on_open)
 
     def open_web_sample(self):
         import shutil
@@ -541,18 +889,32 @@ class MainWindow(AIWorkbench,QMainWindow):
         if reply==QMessageBox.StandardButton.Cancel:return False
         return self.save_all() if reply==QMessageBox.StandardButton.Save else True
 
-    def open_path(self,path):
+    def open_path(self,path, *, on_open=None):
+        if self.patch_write_editors is not None:
+            self.notify("Wait for the patch operation to finish before switching projects.")
+            return
         if self.confirm_unsaved():
+            if self.tool_window:self.tool_window.close()
+            self._workspace_epoch=getattr(self,'_workspace_epoch',0)+1
+            if self.ai_worker and self.ai_job_kind!='connect':self.cancel_ai()
+            self._pending_feature=None;self._pending_architecture=False
+            if self.worker:
+                self._pending_repository=(path,on_open);self.worker.cancel.set();return
             self.check_timer.stop(); self.preview_timer.stop(); self.pending_check=False
             paths=self.watcher.files()+self.watcher.directories()
             if paths:self.watcher.removePaths(paths)
             def opened(result):
-                self.indexed(result[0]); self.analyzed(result,False); self.navigate(6)
+                self.indexed(result[0]); self.analyzed(result,False); self.navigate(REVIEW_PAGE)
+                if on_open:on_open()
             self.start(lambda cancel,progress:analyze_workspace(Path(path),comparison="auto",model_path=self.model_path(),cancel=cancel,progress=progress),opened)
 
     def files_changed(self,path):
         if self.snapshot:
-            self.invalidate_results(); self.pending_check=True; self.check_timer.start()
+            self.pending_check=True
+            self.report_stale=bool(self.report)
+            self.patch_stale=bool(self.patch)
+            self.update_result_state()
+            self.check_timer.start()
 
     def update_watchers(self):
         desired=set(self.report.get("watch_directories",[])) if self.report else set()
@@ -566,38 +928,54 @@ class MainWindow(AIWorkbench,QMainWindow):
 
     def automatic_check(self):
         if not self.snapshot:return
+        if self.ai_worker is not None:
+            self.pending_check=True;self.check_timer.start();return
+        if self.patch is not None and not self.patch_stale:
+            self.pending_check=False;return
         if self.worker is not None or any(editor.document().isModified() for editor in self.documents):
             self.pending_check=True; return
         self.pending_check=False
         root=Path(self.snapshot.root); mode=self.comparison.currentData(); model=self.model_path()
+        previous_snapshot=self.snapshot
         def checked(result):
             snapshot,report=result
-            if self.report and self.report["snapshot"]==snapshot.id:
-                self.report_stale=False
-                self.patch_stale=bool(self.patch and self.patch["snapshot"]!=snapshot.id)
+            same_report = self.report and (self.report['comparison']=='symbol' and focus is None or all(
+                self.report[key]==report[key] for key in ('changes','comparison','tests')))
+            if same_report and snapshot is previous_snapshot and self.report['snapshot']==snapshot.id:
+                self.report_stale=self.pending_check or any(editor.document().isModified() for editor in self.documents)
+                self.patch_stale=bool(self.patch and (self.report_stale or self.patch["snapshot"]!=snapshot.id))
                 self.report["watch_directories"]=report["watch_directories"]
                 self.update_result_state(); self.update_watchers()
-            else:self.analyzed(result,False)
-        self.start(lambda cancel,progress:analyze_workspace(root,comparison=mode,model_path=model,cancel=cancel,progress=progress),checked)
+            else:self.analyzed(result,False,background=True)
+        focus=self.report.get("review_focus") if self.report else None
+        self.start(lambda cancel,progress:analyze_workspace(root,focus,mode,model,cancel,progress,
+                   previous_snapshot=previous_snapshot),checked,quiet=True)
 
     def automatic_preview(self):
-        if self.pages.currentIndex()!=4 or not self.new_name.text().strip().isidentifier():return
+        refactoring = self.pages.currentIndex()==4 or (self.tool_window and self.tool_window.page_index==4)
+        if not refactoring or not self.new_name.text().strip().isidentifier():return
+        if any(editor.document().isModified() for editor in self.documents):return
         if self.worker:self.preview_timer.start(); return
         self.preview()
 
     def schedule_preview(self,*args):
-        if self.operation.currentData()=='ai_rewrite':self.preview_timer.stop();return
         if self.patch:
             self.patch_stale=True; self.update_result_state()
+        if self.operation.currentData()=='ai_rewrite':self.preview_timer.stop();return
         self.preview_timer.start()
 
     def reindex(self):
         if self.snapshot:self.analyze(None)
 
     def indexed(self,snapshot,preserve=False):
+        self.dismiss_inline_refactor()
+        self.qa_fix_request = None
+        self.refactor_ai_target = None
         if not preserve:
+            self.architecture_view.clear_report()
             self.editor_tabs.blockSignals(True); self.editor_tabs.clear(); self.documents.clear(); self.editors.clear(); self.editor_tabs.blockSignals(False)
         self.snapshot=snapshot; self.report=self.patch=None; self.project_name.setText(Path(snapshot.root).name); self.project_name.setToolTip(snapshot.root)
+        self.populate_qa_review()
         self.report_stale=self.patch_stale=False; self.test_choices.clear(); self.result_state.hide()
         from .flutter_sdk import detect_sdk
         sdk=detect_sdk() if 'dart' in snapshot.profile.get('languages',{}) else None
@@ -650,9 +1028,9 @@ class MainWindow(AIWorkbench,QMainWindow):
             parent=""
             for part in Path(path).parts[:-1]:
                 name=(parent+"/"+part).strip("/")
-                if name not in folders:folders[name]=QTreeWidgetItem(folders[parent],[part]); folders[name].setIcon(0,icon("folder"))
+                if name not in folders:folders[name]=QTreeWidgetItem(folders[parent],[part]); folders[name].setIcon(0,folder_icon(part))
                 parent=name
-            item=QTreeWidgetItem(folders[parent],[Path(path).name]); item.setIcon(0,icon("code" if is_source(path) else "file")); item.setData(0,Qt.ItemDataRole.UserRole,{"path":path}); item.setToolTip(0,path)
+            item=QTreeWidgetItem(folders[parent],[Path(path).name]); item.setIcon(0,file_icon(path)); item.setData(0,Qt.ItemDataRole.UserRole,{"path":path}); item.setToolTip(0,path)
             for symbol in sorted(grouped.get(path,[]),key=lambda s:s.start):
                 if "." in symbol.qualname:continue
                 child=QTreeWidgetItem(item,[symbol.name+("()" if symbol.kind!="class" else "")]); child.setIcon(0,icon("test" if symbol.is_test else "code","#a6abb3")); child.setData(0,Qt.ItemDataRole.UserRole,{"path":path,"symbol":symbol.id})
@@ -664,6 +1042,10 @@ class MainWindow(AIWorkbench,QMainWindow):
             if value==selected:self.explorer.setCurrentItem(item)
             iterator+=1
         if old_root==self.snapshot.root:self.explorer.verticalScrollBar().setValue(scroll)
+
+    def update_folder_icon(self, item, expanded):
+        if not item.data(0,Qt.ItemDataRole.UserRole):
+            item.setIcon(0,folder_icon(item.text(0),expanded))
 
     def filter_tree(self,query):
         needle=query.casefold()
@@ -696,30 +1078,48 @@ class MainWindow(AIWorkbench,QMainWindow):
             template=Path(self.snapshot.root)==(resources()/"demo").resolve()
             editor=CodeEditor(readonly=template); editor.set_code(document.text)
             editor.set_language(target)
-            self.documents[editor]=document; self.editors[path]=editor; self.editor_tabs.addTab(editor,icon("code"),target.name)
+            self.documents[editor]=document; self.editors[path]=editor; self.editor_tabs.addTab(editor,file_icon(target),target.name)
             editor.document().modificationChanged.connect(lambda modified,e=editor:self.mark_modified(e,modified)); editor.saveRequested.connect(self.save_current)
             editor.completionRequested.connect(self.request_completion); editor.positionChanged.connect(self.position.setText); editor.cursorPositionChanged.connect(self.cursor_symbol)
             editor.automaticCompletionRequested.connect(lambda:self.request_completion(True))
             editor.aiCompletionRequested.connect(self.request_ai_completion); editor.ai_enabled=self.ai_ready
-            editor.refactorRequested.connect(self.prepare_refactor)
+            editor.refactorRequested.connect(lambda operation:self.editor_refactor_action(editor,operation))
+            editor.refactorClicked.connect(lambda start,end:self.open_inline_refactor(editor,start,end))
+            editor.refactorSelectionRequested.connect(lambda start,end:self.open_inline_extraction(editor,start,end))
+            editor.dismissRefactorRequested.connect(lambda:self.dismiss_inline_refactor(editor))
+            editor.textChanged.connect(lambda:self.dismiss_inline_refactor(editor,source_changed=True))
+            editor.verticalScrollBar().valueChanged.connect(lambda *_:self.dismiss_inline_refactor(editor,source_changed=True))
+            editor.horizontalScrollBar().valueChanged.connect(lambda *_:self.dismiss_inline_refactor(editor,source_changed=True))
             editor.definitionRequested.connect(self.go_to_definition)
             editor.formatRequested.connect(self.format_current)
-        self.editor_tabs.setCurrentWidget(editor); self.editor_stack.setCurrentIndex(1)
+            editor.reviewRequested.connect(self.review_edits)
+        self.set_editor_comparison(editor,path)
+        self.editor_tabs.setTabToolTip(self.editor_tabs.indexOf(editor),str(target)); self.editor_tabs.setCurrentWidget(editor); self.editor_stack.setCurrentIndex(1)
         if line:editor.goto_line(line)
         editor.setFocus(); self.cursor_symbol(); self.refresh_actions()
+
+    def set_editor_comparison(self,editor,path):
+        if not self.report or self.report.get('comparison')=='symbol':return
+        record=next((r for r in self.report['changes']['files'] if r['path']==path),None)
+        editor.change_base_text=(record['before'] if record and record.get('before') is not None else self.documents[editor].text).replace('\r\n','\n')
+        editor.change_base_label=self.report.get('comparison_context',{}).get('label','project comparison')
+        editor.update_edit_marks()
 
     def mark_modified(self,editor,modified):
         document=self.documents.get(editor)
         if document:self.editor_tabs.setTabText(self.editor_tabs.indexOf(editor),document.path.name+(" •" if modified else ""))
         if modified and document and is_indexable(document.path):self.invalidate_results()
+        if not modified and self.pending_check and not self.worker and not self.check_timer.isActive():
+            if not any(other.document().isModified() for other in self.documents):self.check_timer.start()
 
     def editor_changed(self,index):
+        self.dismiss_inline_refactor()
         if hasattr(self,'find_panel') and self.find_panel.isVisible():self.find_panel.refresh()
         if hasattr(self,"breadcrumb"):
             editor=self.editor_tabs.widget(index); doc=self.documents.get(editor)
-            self.breadcrumb.setText(str(doc.path.relative_to(Path(self.snapshot.root))).replace("\\","  /  ") if doc and self.snapshot else "")
+            self.breadcrumb.setText(str(doc.path.relative_to(Path(self.snapshot.root))).replace("\\","  /  ") if doc and self.snapshot else "No file open")
         if not self.editor_tabs.count():self.editor_stack.setCurrentIndex(0)
-        self.cursor_symbol(); self.refresh_actions()
+        self.cursor_symbol(); self.refresh_actions();self.update_shell()
 
     def close_document(self,index):
         editor=self.editor_tabs.widget(index); document=self.documents[editor]
@@ -735,14 +1135,26 @@ class MainWindow(AIWorkbench,QMainWindow):
             if editor.document().isModified() and not editor.isReadOnly():
                 if editor.toPlainText()!=self.documents[editor].text:self.documents[editor].save(editor.toPlainText())
                 editor.document().setModified(False)
+                if getattr(self.documents[editor],"history_warning",""):self.notify(self.documents[editor].history_warning,True)
             return True
         except (OSError,ValueError,UnicodeError) as exc:self.notify(str(exc),True);return False
 
     def save_current(self):
-        editor=self.current_editor()
-        if editor and self.save_editor(editor):
-            self.notify("Saved — project checks update automatically.")
-            self.pending_check=True; self.check_timer.start()
+        if self.pages.currentIndex()==8:
+            self.architecture_view.active_canvas().save_design();return
+        editor, document = self.current_editor(), self.current_document()
+        if editor and document and editor.document().isModified() and not editor.isReadOnly():
+            previous = document.digest
+            if self.save_editor(editor) and document.digest != previous:
+                if is_indexable(document.path):
+                    self.pending_check=True; self.check_timer.start()
+                    self.update_result_state()
+                if not document.history_warning:self.notify("Saved.")
+
+    def review_edits(self):
+        if not self.current_document():return
+        from .edit_review import EditReview
+        self.edit_review=EditReview(self);self.edit_review.show()
 
     def format_current(self):
         if self.worker:return
@@ -813,7 +1225,13 @@ class MainWindow(AIWorkbench,QMainWindow):
 
     def request_completion(self,automatic=False):
         editor=self.current_editor(); document=self.current_document()
-        if not editor or not document or document.path.suffix!=".py" or self.completion_worker is not None:return
+        if not editor or not document:return
+        if language_for(document.path)!='python':
+            if not automatic:
+                if self.ai_ready:self.request_ai_completion()
+                else:self.notify('Enable local AI completion in Notes → Model settings for this language.')
+            return
+        if self.completion_worker is not None:return
         code=editor.toPlainText(); cursor=editor.textCursor(); position=cursor.position(); line=cursor.blockNumber()+1
         col=len(cursor.block().text().encode("utf-16-le")[:cursor.positionInBlock()*2].decode("utf-16-le"))
         worker=Worker(lambda cancel,progress:complete_python(code,str(document.path),line,col,self.snapshot.root),self); self.completion_worker=worker
@@ -855,22 +1273,34 @@ class MainWindow(AIWorkbench,QMainWindow):
     def analyze_changes(self):
         if self.snapshot:self.analyze(None)
 
-    def analyze(self,seeds,run_after=False):
+    def analyze(self,seeds,run_after=False, *, show_review=True, after_analysis=None):
+        if self.worker:return
         if not self.save_all():return
         self.pending_check=False; self.check_timer.stop()
         root=Path(self.snapshot.root); mode=self.comparison.currentData(); model=self.model_path()
         def done(result):
-            self.analyzed(result)
+            self.analyzed(result,show_review)
+            if after_analysis:after_analysis()
             if run_after and self.report["summary"]["recommended_tests"]:self.check_and_run()
         self.start(lambda cancel,progress:analyze_workspace(root,seeds,mode,model,cancel,progress),done)
 
     @atomic_paint
-    def analyzed(self,result,show_review=True):
+    def analyzed(self,result,show_review=True, *, background=False):
+        previous_choices=self.test_choices.copy() if background else {}
+        current_change=self.change_list.currentRow()
+        previous_path=self.change_rows[current_change]['path'] if 0<=current_change<len(self.change_rows) else None
+        previous_patch=self.patch if background else None
         self.snapshot,self.report=result; self.patch=None; report=self.report
+        if self.architecture_view.report and self.architecture_view.report['snapshot_id']!=self.snapshot.id:
+            self.architecture_view.status.setText('Project changed since architecture review. Choose Review project to refresh the design.')
         if not show_review:self.reload_clean_documents()
-        self.report_stale=any(editor.document().isModified() and is_indexable(document.path) for editor,document in self.documents.items())
-        self.patch_stale=False; self.test_choices.clear(); self.update_result_state()
+        self.report_stale=(background and self.pending_check) or any(editor.document().isModified() and is_indexable(document.path) for editor,document in self.documents.items())
+        self.patch=previous_patch
+        self.patch_stale=bool(previous_patch)
+        self.test_choices={row['symbol']:previous_choices[row['symbol']] for row in report['tests'] if row['symbol'] in previous_choices}
+        self.update_result_state()
         self.populate_symbols(); self.populate_explorer(); self.populate_diagnostics(); self.populate_tests()
+        for editor,document in self.documents.items():self.set_editor_comparison(editor,document.path.relative_to(self.snapshot.root).as_posix())
         for key,widget in self.metrics.items():widget.setText(f"{report['summary'][key]:.2f}s" if key=="seconds" else str(report["summary"][key]))
         self.impact_summary.setText(f"{report['summary']['affected_symbols']} potentially affected symbols. Select a relationship to inspect its source and reasoning.")
         self.impact_view.clear(); nodes={}
@@ -885,11 +1315,17 @@ class MainWindow(AIWorkbench,QMainWindow):
         if self.impact_view.topLevelItemCount():self.impact_clicked(self.impact_view.topLevelItem(0),0)
         self.change_rows=report["changes"]["files"]; self.change_list.clear()
         for row in self.change_rows:
-            item=QListWidgetItem(icon("file"),Path(row["path"]).name+"\n"+row["status"]); item.setToolTip(row["path"]); self.change_list.addItem(item)
+            item=QListWidgetItem(file_icon(row["path"]),Path(row["path"]).name+"\n"+row["status"]); item.setToolTip(row["path"]); self.change_list.addItem(item)
         self.change_summary.setText(f"{len(self.change_rows)} changed source/configuration files · Compared with {report['comparison']} · Saved edits included")
-        if self.change_rows:self.change_list.setCurrentRow(0)
+        if self.change_rows:
+            selected=next((i for i,row in enumerate(self.change_rows) if row['path']==previous_path),0) if background else 0
+            self.change_list.setCurrentRow(selected)
         else:self.changes_view.clear()
-        self.populate_review(); self.update_watchers()
+        self.populate_review(); self.populate_qa_review(); self.update_watchers()
+        self.run_summary.setText("Tests not run for this saved-source analysis.")
+        self.validation_view.clear()
+        self.validation_view.hide()
+        if background:return
         if report["possible_gaps"]:self.notify(f"Check complete · {len(report['possible_gaps'])} symbols need a closer look in Review.")
         elif not report["changes"]["seeds"]:self.notify("Ready — edit and save; checks refresh automatically.")
         else:self.notify(f"Check complete · {report['summary']['recommended_tests']} recommended tests ready to run.")
@@ -902,8 +1338,10 @@ class MainWindow(AIWorkbench,QMainWindow):
                 editor.setReadOnly(True); self.editor_tabs.setTabText(self.editor_tabs.indexOf(editor),document.path.name+" (deleted)"); continue
             fresh=Document(document.path)
             if fresh.digest!=document.digest:
+                vertical=editor.verticalScrollBar().value();horizontal=editor.horizontalScrollBar().value()
                 position=editor.textCursor().position(); self.documents[editor]=fresh; editor.set_code(fresh.text)
                 cursor=editor.textCursor(); cursor.setPosition(min(position,editor.document().characterCount()-1)); editor.setTextCursor(cursor)
+                editor.verticalScrollBar().setValue(vertical);editor.horizontalScrollBar().setValue(horizontal)
             editor.setReadOnly(Path(self.snapshot.root)==(resources()/"demo").resolve())
 
     def impact_clicked(self,item,column):
@@ -941,7 +1379,11 @@ class MainWindow(AIWorkbench,QMainWindow):
                 item=QTableWidgetItem(value); item.setToolTip(row["reason"]); self.test_table.setItem(index,col,item)
             check=QTableWidgetItem(); check.setFlags(Qt.ItemFlag.ItemIsUserCheckable|Qt.ItemFlag.ItemIsEnabled); check.setCheckState(Qt.CheckState.Checked if self.test_choices.get(row["symbol"],row["recommended"]) else Qt.CheckState.Unchecked); self.test_table.setItem(index,3,check); self.test_table.setRowHeight(index,52)
         self.test_table.blockSignals(False)
-        if self.report:self.test_summary.setText(f"{sum(row['recommended'] for row in self.report['tests'])} linked · {len(self.report['tests'])} discovered · {self.report.get('ranking',{}).get('method','')} · scores order tests within evidence groups")
+        if self.report:
+            count=sum(row["recommended"] for row in self.report["tests"])
+            summary=f"{count} test{'s' if count != 1 else ''} linked to this review. Check the ones you want to run."
+            if not count:summary="No tests linked to this review. Choose Show other tests to look for a relevant one."
+            self.test_summary.setText(summary)
         self.refresh_actions()
 
     def test_choice_changed(self,item):
@@ -951,8 +1393,17 @@ class MainWindow(AIWorkbench,QMainWindow):
 
     def show_test_features(self,row,column):
         if 0<=row<len(self.test_rows):
-            result=self.test_rows[row]; evidence="\n".join(f"{e['caller']} -> {e['callee']} · line {e['line']} · {e['expression']}" for e in result["evidence"])
-            self.test_reason.setText(result["reason"]+("\n"+evidence if evidence else "")+"\n"+result.get("model_scope","")+"\nScores rank within evidence groups; they are not correctness probabilities.")
+            result=self.test_rows[row]
+            reasons={"Direct caller":"This test calls the reviewed code.",
+                     "Transitive caller":"This test calls other code that reaches the reviewed code.",
+                     "Inferred dependency":"The review found a possible connection. Check the references below.",
+                     "Fixture dependency":"The test uses shared setup code connected to this review.",
+                     "Changed test":"This test is part of the saved changes.",
+                     "Name similarity":"The test name is similar to the reviewed code. Check what it actually exercises.",
+                     "Weak match":"Change Lens found no clear connection. Check the test before running it."}
+            evidence=["%s:%s uses %s" % (edge["caller"].split(":",1)[0],edge["line"],edge["expression"])
+                      for edge in result["evidence"][:3]]
+            self.test_reason.setText("\n".join([reasons.get(result["relation"],result["reason"]),*evidence]))
 
     def checked_tests(self):
         return [row["symbol"] for index,row in enumerate(self.test_rows) if self.test_table.item(index,3).checkState()==Qt.CheckState.Checked]
@@ -961,24 +1412,50 @@ class MainWindow(AIWorkbench,QMainWindow):
         path,_=QFileDialog.getOpenFileName(self,"Choose Python, Node or Dart runtime",self.interpreter.text(),"Runtimes (python.exe node.exe dart.exe python node dart);;All files (*)")
         if path:self.interpreter.setText(path)
 
-    def validate_demo(self,mutation=False):
-        if not self.snapshot or not self.report or not self.save_all():return
+    def confirm_test_trust(self,root):
+        if root not in self.trusted_roots:
+            reply=QMessageBox.question(self.tool_window or self,"Trust this repository for execution?",
+                "Running tests executes this project's code, dependencies and plugins on your laptop. Continue only if you trust its code. JS/TS selection uses files or framework path filters and may run other tests in those files.\n\n"+root,
+                QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)
+            if reply!=QMessageBox.StandardButton.Yes:return False
+            self.trusted_roots.add(root)
+        return True
+
+    def validate_demo(self,mutation=False, *, selected_tests=None):
+        if not self.snapshot or not self.report or self.worker:return
         if self.report_stale or self.report["snapshot"]!=self.snapshot.id:
             self.notify("Analyze the saved source again before running these test recommendations.",True); return
-        snapshot=self.snapshot; selected=self.checked_tests(); self.navigate(3)
+        snapshot=self.snapshot; selected=self.checked_tests() if selected_tests is None else selected_tests
         if not selected:self.notify("Check at least one test to run.",True);return
         if not execution_family(snapshot,selected):self.notify("Select Python, JavaScript/TypeScript or Flutter tests from one execution family. Other languages provide structural recommendations only.",True);return
         if Path(snapshot.root)==(resources()/"demo").resolve():
             task=lambda cancel,progress:execute_demo(Path(snapshot.root),[sid.replace(":","::",1) for sid in selected],None,mutation,cancel,progress)
         else:
             if mutation:self.notify("Fault injection is only available for the controlled demo.",True);return
-            if snapshot.root not in self.trusted_roots:
-                reply=QMessageBox.question(self,"Trust this repository for execution?","Running tests executes this project's code, dependencies and plugins on your laptop. Continue only if you trust its code. JS/TS selection uses files or framework path filters and may run other tests in those files.\n\n"+snapshot.root,QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)
-                if reply!=QMessageBox.StandardButton.Yes:return
-                self.trusted_roots.add(snapshot.root)
+            if not self.confirm_test_trust(snapshot.root):return
             interpreter=self.interpreter.text(); timeout=self.timeout.value()
             task=lambda cancel,progress:run_project_tests(snapshot,selected,interpreter,True,timeout,cancel,progress)
-        self.validation_view.clear(); self.run_summary.setText("Running selected tests against saved source…"); self.start(task,self.validated,True)
+        report=self.report
+        def checked_run(cancel,progress):
+            ensure_fresh(snapshot)
+            outcome=task(cancel,progress)
+            ensure_fresh(snapshot)
+            return {**outcome,"snapshot":snapshot.id}
+        def ready(outcome):
+            dirty=any(editor.document().isModified() and is_indexable(document.path)
+                      for editor,document in self.documents.items())
+            if self.report is report and not dirty:
+                self.report_stale=False
+                self.update_result_state()
+                self.validated(outcome)
+            else:self.run_summary.setText("Source changed during the test run. Refresh the review to run current tests.")
+        if self.pages.currentIndex()!=3:self.open_tool_window(3,'Tests')
+        self.validation_view.clear(); self.validation_view.show()
+        if self.tool_window and self.tool_window.page_index==3:
+            self.tool_window.resize(self.tool_window.width(), min(650,self.height()-36))
+        self.test_split.setSizes([350,280])
+        self.run_summary.setText("Running selected tests against saved source…")
+        self.start(checked_run,ready,True)
 
     def validated(self,result):
         if "full" in result:
@@ -988,17 +1465,103 @@ class MainWindow(AIWorkbench,QMainWindow):
             if result["controlled_mutation"]:output+="\nControlled fault: observed failing-test recall = "+str(result["failing_test_recall"])
         else:
             self.report["test_run"]=result; self.run_summary.setText(f"{result['status'].upper()} · {result['tests_requested']} {result.get('selection_unit','tests')} requested · {result['seconds']:.2f}s · {result['scope']}"); output=result["output"]
-        self.validation_view.setPlainText(output); self.notify("Test run finished. Preview patches were not applied to the repository.")
+        self.validation_view.setPlainText(output); self.notify("Test run finished for the saved source.")
+        self.update_qa_actions()
+
+    def choose_workspace_function(self,title,selected):
+        if not self.snapshot or self.worker:return
+        functions=[symbol for symbol in self.snapshot.symbols.values()
+                   if symbol.kind in {"function","async_function"}]
+        if not functions:
+            self.notify("No indexed functions found in this project. Open a source file or try the sample.")
+            return
+        self.show_picker(title,[(f"{symbol.qualname}  ·  {symbol.path}",lambda symbol=symbol:selected(symbol))
+                                for symbol in functions])
+
+    def choose_refactor_function(self):
+        self.choose_workspace_function("Choose a function to refactor…",self.focus_refactor_function)
+
+    def focus_refactor_function(self,symbol):
+        self.refactor_ai_target=None
+        self.open_file(symbol.path,symbol.start)
+        editor=self.editors.get(symbol.path)
+        if editor is None or editor is not self.current_editor():return False
+        if editor.document().isModified():
+            self.notify("Save this file, then choose the function again.",True)
+            return False
+        if language_for(symbol.path)=="python":
+            # Rope needs the name token, which may follow decorators or an async keyword.
+            import io
+            import tokenize
+            tokens=tokenize.generate_tokens(io.StringIO(symbol.source).readline)
+            for token in tokens:
+                if token.type==tokenize.NAME and token.string=="def":
+                    name=next(tokens)
+                    if name.type==tokenize.NAME and name.string==symbol.name:break
+            else:
+                self.notify("The function name could not be located. Refresh the project and try again.",True)
+                return False
+            block=editor.document().findBlockByNumber(symbol.start+name.start[0]-2)
+            if not block.isValid() or block.text()[name.start[1]:name.end[1]]!=symbol.name:
+                self.notify("The function moved. Refresh the project and choose it again.",True)
+                return False
+            column=len(block.text()[:name.start[1]].encode("utf-16-le"))//2
+            cursor=QTextCursor(block); cursor.setPosition(block.position()+column)
+            editor.setTextCursor(cursor)
+            self.prepare_rename()
+        else:
+            self.patch=None;self.patch_list.clear();self.diff_view.clear()
+            self.operation.setCurrentIndex(self.operation.findData("ai_rewrite"))
+            self.refactor_mode_changed()
+            self.refactor_ai_target=(editor,symbol.id,symbol.start)
+            self.model_instruction.clear()
+            self.navigate(4)
+            self.model_instruction.setFocus()
+            self.update_result_state()
+        return True
+
+    def try_refactor_sample(self):
+        def ready():
+            original,renamed="calculate_invoice_total","calculate_total"
+            target=(self.snapshot.symbols.get(f"invoice.py:{original}")
+                    or self.snapshot.symbols.get(f"invoice.py:{renamed}"))
+            if target and self.focus_refactor_function(target):
+                self.new_name.setText(renamed if target.name==original else original)
+                self.preview()
+            else:
+                self.navigate(4)
+                self.choose_refactor_function()
+        self.open_sample(on_open=ready,practice=True)
+
+    def refactor_uses_saved_source(self):
+        if any(editor.document().isModified() for editor in self.documents):
+            self.notify("Save your changes in Editor, then preview the refactor.",True)
+            return False
+        return True
 
     def update_refactor_context(self):
         if not hasattr(self,"refactor_context"):return
-        if self.patch and self.patch["operation"]=="ai_rewrite" and self.operation.currentData()=="ai_rewrite":
-            self.refactor_context.setText(self.patch.get("explanation","")+"\nGenerated locally · syntax checked · behavior not proven · tests not run")
-            return
-        editor=self.current_editor(); document=self.current_document()
+        self.update_ai_language()
+        editor,document=self.current_editor(),self.current_document()
+        structural=bool(document and structural_refactoring(document.path))
+        for i in range(self.operation.count()):
+            entry=self.operation.model().item(i)
+            if entry:entry.setEnabled(structural or self.operation.itemData(i)=='ai_rewrite')
         if not editor or not document:return
-        if language_for(document.path)!="python":
-            self.refactor_context.setText("Local AI suggested improvement supports this language with syntax and declaration checks. Structural rename/extract remains Python-only. Review every proposal; types, behavior and tests are not verified."); return
+        if not structural and self.operation.currentData()!='ai_rewrite':
+            self.operation.setCurrentIndex(self.operation.findData('ai_rewrite'))
+        if self.patch and self.patch["operation"]==self.operation.currentData():
+            if self.patch.get("finding_title"):
+                description=f"Proposed fix for “{self.patch['finding_title']}”\n"+self.patch.get("explanation","").split(" Context:",1)[0]
+            elif self.patch["operation"]=="ai_rewrite":
+                description=self.patch.get("explanation","")+"\nGenerated locally · syntax checked · tests not run"
+            else:
+                description=f"{self.operation.currentText()} · {self.patch['old']} → {self.patch['new']}\n{self.patch['path']}"
+            self.refactor_context.setText(description)
+            return
+        if self.operation.currentData()=='ai_rewrite':
+            self.refactor_context.setText(f"{document.path.name} · line {editor.textCursor().blockNumber()+1}\n"
+                                          "Describe the cleanup you want, then choose Preview improvement."); return
         cursor=editor.textCursor(); word=QTextCursor(cursor); word.select(QTextCursor.SelectionType.WordUnderCursor)
         selected=cursor.selectedText() if cursor.hasSelection() else word.selectedText()
         self.old_name.setText(selected if selected.isidentifier() else "(selection)" if cursor.hasSelection() else "")
@@ -1006,21 +1569,33 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.refactor_context.setText(f"{document.path.name} · line {cursor.blockNumber()+1} · {selection}")
 
     def prepare_rename(self):
-        if self.current_document() and language_for(self.current_document().path)!="python":self.notify("Reviewed rename/extract currently supports Python only. Use the Brief for explanations of this language.",True); return
+        if self.current_document() and not structural_refactoring(self.current_document().path):
+            self.notify("Rename is available for Python, JavaScript and TypeScript.",True);return
         if self.current_editor():
+            cursor = self.current_editor().textCursor()
+            if not cursor.hasSelection():cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+            if not cursor.selectedText().strip():
+                self.notify("Place the cursor on a name to rename it.", True)
+                return
             self.patch=None; self.patch_list.clear(); self.diff_view.clear(); self.new_name.clear()
-            self.operation.setCurrentIndex(0); self.update_refactor_context(); self.navigate(4); self.new_name.setFocus(); self.update_result_state()
+            self.operation.setCurrentIndex(0); self.update_refactor_context(); self.open_tool_window(4,'Rename symbol',focused_refactor=True); self.new_name.setFocus(); self.update_result_state()
 
     def refactor_mode_changed(self,*args):
+        self.qa_fix_request = None
         generated=self.operation.currentData()=="ai_rewrite"
+        if hasattr(self,'model_instruction'):self.model_instruction.setVisible(generated)
         self.old_name.setVisible(not generated); self.new_name.setVisible(not generated)
-        self.preview_button.setText("Regenerate suggestion" if generated else "Preview changes")
+        self.preview_button.setText("Preview improvement" if generated else "Preview changes")
+        if self.patch and self.patch["operation"]!=self.operation.currentData():
+            self.patch_stale=True
+            self.update_result_state()
         self.refresh_actions()
 
     def prepare_refactor(self,operation):
-        if self.current_document() and language_for(self.current_document().path)!="python":self.notify("Reviewed rename/extract currently supports Python only.",True); return
+        if self.current_document() and not structural_refactoring(self.current_document().path):
+            self.notify("Rename and extract are available for Python, JavaScript and TypeScript.",True);return
         self.patch=None; self.patch_list.clear(); self.diff_view.clear()
-        self.operation.setCurrentIndex(self.operation.findData(operation)); self.update_refactor_context(); self.navigate(4); self.new_name.setFocus()
+        self.operation.setCurrentIndex(self.operation.findData(operation)); self.update_refactor_context(); self.open_tool_window(4,'Refactor selection',focused_refactor=True); self.new_name.setFocus()
         if operation in {"extract_method","extract_variable"} and self.current_editor():
             import re
             names=set(re.findall(r"\w+",self.current_editor().toPlainText()))
@@ -1030,19 +1605,35 @@ class MainWindow(AIWorkbench,QMainWindow):
             self.new_name.setText(candidate); self.preview_timer.start()
 
     def idea_clicked(self,item):
-        idea=item.data(Qt.ItemDataRole.UserRole); self.operation.setCurrentIndex(self.operation.findData(idea["operation"])); self.navigate(4); self.notify(idea["reason"])
+        idea=item.data(Qt.ItemDataRole.UserRole)
+        if idea['operation']=='model_review':self.review_code();return
+        self.operation.setCurrentIndex(self.operation.findData(idea["operation"])); self.navigate(4); self.notify(idea["reason"])
 
     def preview(self):
+        if self.worker:
+            self.notify("Wait for the current project operation before previewing a refactor.")
+            return
         self.preview_timer.stop(); self.check_timer.stop(); self.pending_check=False
-        if self.operation.currentData()=="ai_rewrite":self.suggest_rewrite(); return
+        if self.operation.currentData()=="ai_rewrite":self.suggest_rewrite(fix=getattr(self,"qa_fix_request",None)); return
         editor=self.current_editor(); document=self.current_document()
-        if not editor or not document or not self.save_all():return
+        if not editor or not document or not self.refactor_uses_saved_source():return
         cursor=editor.textCursor(); start=editor.code_offset(cursor.selectionStart() if cursor.hasSelection() else cursor.position()); end=editor.code_offset(cursor.selectionEnd()) if cursor.hasSelection() else None
+        line=editor.toPlainText().count("\n",0,start)+1
         root=Path(self.snapshot.root); path=document.path.relative_to(root).as_posix(); operation=self.operation.currentData(); name=self.new_name.text().strip()
+        digest=document.digest
         if not name:self.notify("Enter a new name for the symbol, helper or variable.",True);return
         self.patch=None
         def task(cancel,progress):
-            snapshot=index_repository(root,cancel,progress); return snapshot,preview_refactoring(snapshot,path,operation,name,start,end,cancel,progress)
+            snapshot=index_repository(root,cancel,progress)
+            if snapshot.hashes.get(path)!=digest:
+                raise ValueError("The saved file changed on disk. Refresh the editor and choose the refactoring target again.")
+            patch=preview_refactoring(snapshot,path,operation,name,start,end,cancel,progress)
+            matches=[symbol for symbol in snapshot.symbols.values()
+                     if symbol.path==path and symbol.start<=line<=symbol.end]
+            if matches:
+                focus=min(matches,key=lambda symbol:(symbol.end-symbol.start,symbol.kind=="module"))
+                patch["linked_tests"]=linked_tests(snapshot,[focus.id],cancel)
+            return snapshot,patch
         self.start(task,self.previewed)
 
     def previewed(self,result):
@@ -1050,45 +1641,95 @@ class MainWindow(AIWorkbench,QMainWindow):
         self.report_stale=bool(self.report and self.report["snapshot"]!=self.snapshot.id) or any(editor.document().isModified() and is_indexable(document.path) for editor,document in self.documents.items())
         self.patch_stale=(self.patch["new"]!=self.new_name.text().strip() or self.patch["operation"]!=self.operation.currentData() or
             any(editor.document().isModified() and is_indexable(document.path) for editor,document in self.documents.items()))
-        if self.patch_stale:self.preview_timer.start()
+        if self.patch_stale and self.patch["operation"]!="ai_rewrite":self.preview_timer.start()
+        self.update_refactor_context()
         self.update_result_state()
-        for row in self.patch["files"]:self.patch_list.addItem(QListWidgetItem(icon("file"),row["path"]))
-        self.patch_list.setCurrentRow(0); self.navigate(4); self.notify(f"Preview ready · {len(self.patch['files'])} files · syntax passed · tests not run. Original files unchanged.")
-        if self.patch["operation"]=="ai_rewrite":self.refactor_context.setText(self.patch.get("explanation","")+"\nGenerated locally · syntax checked · behavior not proven · tests not run")
+        if self.tool_window and self.tool_window.page_index==4 and self.tool_window.focused_refactor:
+            self.tool_window.resize(min(940,self.width()-32),min(650,self.height()-36))
+        for row in self.patch["files"]:self.patch_list.addItem(QListWidgetItem(file_icon(row["path"]),row["path"]))
+        self.patch_list.setCurrentRow(0)
+        self.notify("Fix preview ready. Compare the two versions before applying."
+                    if self.patch.get("finding_title")
+                    else f"Preview ready · {len(self.patch['files'])} files · syntax passed · tests not run. Original files unchanged.")
+        related=self.patch.get("linked_tests",[])
+        validation="Syntax, function signature and dependencies checked" if self.patch["operation"]=="ai_rewrite" else "Syntax checked"
+        test_files=list(dict.fromkeys(sid.split(":",1)[0] for sid in related))
+        files=", ".join(test_files[:2])
+        if len(test_files)>2:files+=f" and {len(test_files)-2} more"
+        linked=f"{len(related)} linked test{'s' if len(related)!=1 else ''} in {files}" if related else "No linked tests found"
+        self.patch_checks.setText(f"{validation} · Tests not run\n{linked}")
 
     def show_patch_file(self,index):
         if self.patch and 0<=index<len(self.patch["files"]):
-            row=self.patch["files"][index]; self.diff_view.set_versions(row["before"],row["after"],row["path"])
+            row=self.patch["files"][index]; self.diff_view.set_versions(row["before"],row["after"],row["path"],focus_change=True)
 
-    def apply_patch(self):
-        if not self.patch or not self.save_all():return
+    def apply_patch(self, *, run_tests=False):
+        if not self.patch or self.worker:return
+        if self.patch_stale or any(editor.document().isModified() for editor in self.documents):
+            self.notify("Save or discard your edits and regenerate the preview before applying it.",True)
+            return
+        self.check_timer.stop();self.preview_timer.stop();self.pending_check=False
         if self.patch["new"]!=self.new_name.text().strip() or self.patch["operation"]!=self.operation.currentData():
             self.notify("Wait for the updated preview before applying this refactoring.",True); return
         if Path(self.snapshot.root)==(resources()/"demo").resolve():
             self.notify("The bundled template is read-only. Open the sample project working copy to apply edits.",True);return
         snapshot,patch=self.snapshot,self.patch
-        # Applying requires the explicit button after the user has seen the preview.
-        def task(cancel,progress):
-            checkpoint(cancel)
-            result=apply_reviewed_patch(snapshot,patch)
-            return index_repository(Path(snapshot.root),progress=progress),result
-        def done(result):
-            indexed,record=result
-            self.snapshot=indexed; self.patch=None
-            for editor,document in list(self.documents.items()):
-                relative=document.path.relative_to(Path(indexed.root)).as_posix()
-                if relative in record["files"]:
-                    fresh=Document(document.path); self.documents[editor]=fresh; editor.set_code(fresh.text)
-            self.populate_symbols(); self.populate_explorer(); self.notify(f"Applied {len(record['files'])} reviewed files. Backup: {record['backup']}")
-            self.analyze_changes()
-        self.start(task,done)
+        from_dialog=bool(self.tool_window and self.tool_window.page_index==4)
+        linked=patch.get("linked_tests",[]) if run_tests else []
+        if run_tests and (not execution_family(snapshot,linked) or not self.confirm_test_trust(snapshot.root)):
+            return
+        def run_linked():
+            if not execution_family(self.snapshot,linked):
+                self.notify("The refactor was applied. The linked tests changed, so select tests for the new code.",True)
+                self.open_tool_window(3,'Tests')
+                return
+            self.test_choices={row["symbol"]:row["symbol"] in linked for row in self.report["tests"]}
+            if any(row["symbol"] in linked and not row["recommended"] for row in self.report["tests"]):
+                self.show_weak.setChecked(True)
+            self.populate_tests()
+            self.validate_demo(selected_tests=linked)
+        def applied(receipt):
+            if patch.get("finding_title"):receipt["finding_title"]=patch["finding_title"]
+            self.applied_patch=receipt
+            self.refactor_mode_changed()
+            self.patch=None
+            self.patch_list.clear(); self.diff_view.clear(); self.patch_checks.clear()
+            self.invalidate_results()
+            if from_dialog and self.tool_window and self.tool_window.page_index==4:self.tool_window.close()
+            self.refresh_saved_review(patch.get("fix_focus"),after_review=run_linked if run_tests else None,
+                                      navigate_to_review=not from_dialog and not run_tests)
+        self.start_patch_write(lambda:apply_reviewed_patch(snapshot,patch),applied)
+
+    def start_patch_write(self,write,completed, *, on_error=None):
+        self.patch_write_editors={editor:editor.isReadOnly() for editor in self.documents}
+        for editor in self.patch_write_editors:editor.setReadOnly(True)
+        self.start(lambda cancel,progress:write(),completed,on_error=on_error)
         self.cancel_button.hide()
 
+    def undo_patch(self, *, stay_here=False):
+        if not self.snapshot or self.worker or not self.applied_patch:return
+        root=Path(self.snapshot.root)
+        receipt=self.applied_patch
+        if receipt["root"]!=str(root):return
+        if any(editor.document().isModified() for editor in self.documents):
+            self.notify("Save or discard your editor changes before undoing the applied patch.",True)
+            return
+        def restored(_):
+            self.applied_patch=None
+            self.invalidate_results()
+            self.refresh_saved_review(navigate_to_review=not stay_here)
+        self.start_patch_write(lambda:undo_reviewed_patch(root,receipt),restored)
+
     def populate_diagnostics(self):
+        from .review_quality import diagnostic_digest
         rows=self.report["warnings"] if self.report else self.snapshot.warnings if self.snapshot else []
         self.diagnostics.clear(); query=self.diagnostic_search.text().casefold()
-        self.diagnostics.addItems([row for row in rows if query in row.casefold()]); count=sum(row.startswith(("Cannot parse","Skipped")) for row in rows)
-        self.diagnostic_summary.setText(f"{count} file issues · {len(rows)-count} unresolved or conservative relationships. These are analysis limits, not confirmed defects.")
+        cache=getattr(self,'_diagnostic_digest_cache',None)
+        if not cache or cache[0] is not rows or cache[1]!=len(rows):self._diagnostic_digest_cache=(rows,len(rows),diagnostic_digest(rows))
+        digest=diagnostic_digest([row for row in rows if query in row.casefold()]) if query else self._diagnostic_digest_cache[2]
+        self.diagnostics.addItems([f"{g['category']} · {g['title']} · {g['count']} occurrences / {g['file_count']} files\n"+(g['examples'][0]['message'] if g['examples'] else '') for g in digest['groups'][:300]])
+        counts=digest['counts'];count=counts.get('parser exclusions',0)+counts.get('skipped files',0)
+        self.diagnostic_summary.setText(f"{count} file exclusions · {digest['raw_occurrences']} diagnostic occurrences grouped into {len(digest['groups'])} entries · first 300 groups shown. Unresolved references describe analysis coverage, not code-error counts.")
         if self.snapshot:
             profile=self.snapshot.profile
             for language,cap in profile.get("capabilities",{}).items():
@@ -1097,6 +1738,53 @@ class MainWindow(AIWorkbench,QMainWindow):
             for framework in profile.get("frameworks",[]):
                 value=f"Framework hint: {framework['name']} · {framework['path']} · {framework['evidence']} · {framework['note']}"
                 if query in value.casefold():self.diagnostics.addItem(value)
+
+    def build_architecture(self):
+        from .architecture_ui import ArchitectureView
+        self.architecture_view=ArchitectureView()
+        self.architecture_view.generateRequested.connect(self.generate_architecture)
+        self.architecture_view.exportRequested.connect(self.export_architecture)
+        self.architecture_view.codeRequested.connect(self.open_architecture_code)
+        self.architecture_view.modelReviewRequested.connect(self.review_project_model)
+        self.architecture_view.lldReviewRequested.connect(self.review_lld)
+        self.pages.addWidget(self.architecture_view)
+
+    def open_architecture_code(self,path,line):
+        self.open_file(path,line);self.navigate(0)
+
+    def generate_architecture(self):
+        if not self.snapshot:return
+        if self.worker:self._pending_architecture=True;return
+        from .architecture import review_architecture
+        root=Path(self.snapshot.root)
+        unsaved=any(editor.document().isModified() for editor in self.documents)
+        self.architecture_view.status.setText('Reviewing saved source…'+(' Unsaved editor changes are excluded.' if unsaved else ''))
+        def task(cancel,progress):
+            snapshot=index_repository(root,cancel,progress)
+            report=review_architecture(snapshot,cancel,progress)
+            from .core import ensure_fresh
+            ensure_fresh(snapshot)
+            return snapshot,report
+        def ready(result):
+            architecture_snapshot,report=result
+            if not self.snapshot or Path(self.snapshot.root)!=root:return
+            self.architecture_snapshot=architecture_snapshot
+            self.architecture_view.set_report(report)
+            self.show_pending_feature()
+            if unsaved:self.architecture_view.status.setText(self.architecture_view.status.text()+' · Unsaved buffers were excluded')
+            self.notify('Architecture review ready. Double-click a declaration or dependency to open its source.')
+        self.start(task,ready)
+
+    def export_architecture(self):
+        view=self.architecture_view
+        if not self.snapshot or not view.report or self.worker:return
+        from .architecture import export_bundle
+        if any(editor.document().isModified() for editor in self.documents):
+            self.notify('Save or discard editor changes, then review the project before exporting its current design.',True);return
+        folder=QFileDialog.getExistingDirectory(self,'Export architecture report and diagrams',str(app_dir()))
+        if not folder:return
+        report=view.report;snapshot=self.architecture_snapshot
+        self.start(lambda cancel,progress:export_bundle(report,snapshot,folder,cancel),lambda path:self.notify('Architecture bundle exported to '+str(path)))
 
     def train(self):
         def done(model):self.validation_view.setPlainText("Model retrained.\ntraining_pairs: "+str(model["training_pairs"])); self.notify("Experimental test ranker retrained from synthetic examples.")
@@ -1129,17 +1817,24 @@ class MainWindow(AIWorkbench,QMainWindow):
         if self.ai_worker:
             self.cancel_ai(); self.ai_worker.wait(2000)
             if self.ai_worker and self.ai_worker.isRunning():event.ignore(); return
+        if self.patch_write_editors is not None:
+            self.notify("Wait for the patch operation to finish before closing.")
+            event.ignore(); return
         if self.worker:self.cancel(); self.notify("Cancelling work. Close again when it finishes."); event.ignore(); return
         if self.completion_worker:
             self.completion_worker.wait(2000)
             if self.completion_worker.isRunning():event.ignore(); return
         if not self.confirm_unsaved():event.ignore(); return
+        if self.tool_window:self.tool_window.close()
         paths=self.watcher.files()+self.watcher.directories()
         if paths:self.watcher.removePaths(paths)
         event.accept()
 
 
 def main():
+    if sys.platform=="win32":
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ChangeLens.Desktop")
     app=QApplication(sys.argv); app.setApplicationName("Change Lens"); app.setOrganizationName("ChangeLens")
     window=MainWindow(); window.show()
     if "--demo" in sys.argv:window.open_path(resources()/"demo")

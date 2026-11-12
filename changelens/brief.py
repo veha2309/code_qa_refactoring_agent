@@ -24,7 +24,7 @@ class BriefView(QTextBrowser):
         self.setObjectName("briefView"); self.setOpenLinks(False); self.setOpenExternalLinks(False)
         self.document().setDefaultStyleSheet("""
             p { margin-top: 0; margin-bottom: 14px; line-height: 145%; }
-            h1,h2,h3 { color: #e1b399; margin-top: 22px; margin-bottom: 12px; }
+            h1,h2,h3 { color: #cadbd4; margin-top: 22px; margin-bottom: 12px; }
             li { margin-bottom: 8px; }
             code,pre { font-family: 'Roboto Mono'; color: #c5d9d9; }
             pre { background-color: #1c2428; padding: 12px; white-space: pre-wrap; }

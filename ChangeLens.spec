@@ -52,6 +52,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name='ChangeLens',
+    icon='resources/icons/change-lens.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

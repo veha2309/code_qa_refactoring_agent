@@ -1,6 +1,6 @@
 """Keyboard-first file and command picker, without executing project code."""
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QLineEdit, QListWidget, QListWidgetItem
+from PySide6.QtWidgets import QDialog, QVBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QLabel
 
 
 class Picker(QDialog):
@@ -16,6 +16,9 @@ class Picker(QDialog):
         self.query = QLineEdit()
         self.query.setPlaceholderText(title)
         layout.addWidget(self.query)
+        self.hint = QLabel("↑ ↓ to navigate · Enter to open · Esc to close")
+        self.hint.setObjectName("muted")
+        layout.addWidget(self.hint)
         self.results = QListWidget()
         layout.addWidget(self.results, 1)
         self.query.textChanged.connect(self.filter)
@@ -33,6 +36,8 @@ class Picker(QDialog):
                 item.setData(Qt.ItemDataRole.UserRole, callback)
                 self.results.addItem(item)
         self.results.setCurrentRow(0)
+        count = self.results.count()
+        self.hint.setText(f"{count} results · ↑ ↓ to navigate · Enter to open · Esc to close" if count else "No matches. Try a shorter name or a different word.")
 
     def eventFilter(self, watched, event):
         if event.type() == event.Type.KeyPress and event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up):

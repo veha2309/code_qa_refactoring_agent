@@ -7,13 +7,23 @@ import hashlib
 import json
 import uuid
 
-from .core import EXCLUDED, checkpoint, decode_source, ensure_fresh
-from .languages import language_for
+from .core import EXCLUDED, checkpoint, decode_source, ensure_fresh, impact_paths
+from .languages import TYPESCRIPT_LANGUAGES, language_for, structural_refactoring
+
+
+def linked_tests(snapshot, seeds, cancel=None):
+    return [row["symbol"] for row in impact_paths(snapshot, seeds, cancel=cancel)
+            if snapshot.symbols[row["symbol"]].is_test]
 
 
 def preview_refactoring(snapshot, path: str, operation: str, new_name: str, offset: int, end: int | None = None,
                         cancel=None, progress=lambda *_: None):
-    if language_for(path)!="python":raise ValueError("Reviewed rename/extract refactoring currently supports Python only. Other languages support analysis and local AI completion/briefs.")
+    if operation not in {"rename", "extract_method", "extract_variable"}:
+        raise ValueError("Choose a refactoring operation.")
+    if language_for(path) in TYPESCRIPT_LANGUAGES:
+        from .typescript_refactor import preview_typescript
+        return preview_typescript(snapshot, path, operation, new_name, offset, end, cancel, progress)
+    if language_for(path)!="python":raise ValueError("Rename and extract are available for Python, JavaScript and TypeScript.")
     from rope.base.project import Project
     from rope.base.taskhandle import TaskHandle
     from rope.base.change import ChangeContents, ChangeSet
@@ -99,7 +109,10 @@ def preview_refactoring(snapshot, path: str, operation: str, new_name: str, offs
 
 def suggestions(symbol):
     from .python_source import symbol_node
-    if language_for(symbol.path)!='python':return []
+    if language_for(symbol.path)!='python':
+        rows=[{'title':'Review with local model','reason':'Source-focused model findings with explicit uncertainty; no repository code is executed.','operation':'model_review'}]
+        if symbol.kind=='function':rows.append({'title':'Preview a model refactoring','reason':'Review a proposed change with language-specific syntax/signature checks before applying.','operation':'ai_rewrite'})
+        return rows
     try:
         tree = symbol_node(symbol)
     except SyntaxError:
@@ -115,6 +128,38 @@ def suggestions(symbol):
     return rows
 
 
+def _write_reviewed_files(prepared, backup, origin):
+    """Commit validated bytes, rolling back completed writes on a recoverable failure."""
+    from .workspace import Document
+
+    applied = []
+    try:
+        for document, raw in prepared:
+            previous = document.raw
+            document.save_raw(raw, origin=origin)
+            applied.append((document, previous))
+    except Exception as exc:
+        failures = []
+        for written, previous in reversed(applied):
+            try:
+                current = Document(written.path)
+                if current.digest != written.digest:
+                    raise ValueError("file changed after the operation")
+                current.save_raw(previous, origin="refactor rollback")
+            except Exception as rollback:
+                failures.append(f"{written.path.name}: {rollback}")
+        outcome = "Completed writes rolled back." if not failures else "Rollback needs attention: " + "; ".join(failures)
+        raise ValueError(f"{origin.capitalize()} failed: {exc}\n{outcome}\nRecovery backup: {backup}") from exc
+
+
+def _reviewed_path(root, relative):
+    candidate = root / relative
+    path = candidate.resolve()
+    if Path(relative).is_absolute() or not path.is_relative_to(root) or candidate != path:
+        raise ValueError("Patch target is outside the workspace or uses a redirected path.")
+    return path
+
+
 def apply_reviewed_patch(snapshot, patch):
     """Apply an explicitly reviewed preview with conflict checks and recoverable backups."""
     from .core import app_dir
@@ -124,19 +169,22 @@ def apply_reviewed_patch(snapshot, patch):
         raise ValueError("This patch belongs to a different snapshot. Generate a fresh preview.")
     root = Path(snapshot.root)
     prepared = []
+    seen = set()
     for row in patch["files"]:
-        if language_for(row["path"])!="python" and patch.get('operation')!='ai_rewrite':raise ValueError("Structural rename/extract currently supports Python only.")
-        path = (root / row["path"]).resolve()
-        if not path.is_relative_to(root) or row["path"] not in snapshot.hashes or path.is_symlink():
+        if not structural_refactoring(row["path"]) and patch.get('operation')!='ai_rewrite':
+            raise ValueError("Rename and extract are available for Python, JavaScript and TypeScript.")
+        path = _reviewed_path(root, row["path"])
+        if row["path"] not in snapshot.hashes or path in seen:
             raise ValueError("Patch path is outside the indexed workspace.")
+        seen.add(path)
         document = Document(path)
-        if document.text != row["before"]:
+        if document.text != row["before"] or document.digest != snapshot.hashes[row["path"]]:
             raise ValueError(f"{row['path']} changed after this preview. Nothing was applied.")
         if language_for(row['path'])=='python':ast.parse(row['after'],filename=row['path'])
         else:
             from .syntax import parse_unit
             parse_unit(row['path'],row['after'])
-        prepared.append((row, document))
+        prepared.append((row["path"], document, document.encode(row["after"])))
     if not prepared:
         raise ValueError("No reviewed file changes to apply.")
     if snapshot.revision == "no-head" and load_baseline(snapshot.root) is None:
@@ -144,19 +192,39 @@ def apply_reviewed_patch(snapshot, patch):
     backup = app_dir() / "backups" / uuid.uuid4().hex
     backup.mkdir(parents=True)
     metadata = {"root": snapshot.root, "snapshot": snapshot.id, "files": []}
-    for index, (row, document) in enumerate(prepared):
+    for index, (relative, document, raw) in enumerate(prepared):
         (backup / f"{index}.original").write_bytes(document.raw)
-        metadata["files"].append({"path": row["path"], "backup": f"{index}.original",
-                                   "after_sha256": hashlib.sha256(row["after"].replace("\n",document.newline).encode(document.encoding)).hexdigest()})
+        metadata["files"].append({"path": relative, "backup": f"{index}.original",
+                                  "before_sha256": document.digest,
+                                  "after_sha256": hashlib.sha256(raw).hexdigest()})
     (backup / "manifest.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    applied = []
-    try:
-        for row, document in prepared:
-            document.save(row["after"])
-            applied.append((row, document))
-    except Exception:
-        for row, document in reversed(applied):
-            document.save(row["before"])
-        raise
-    return {"files": [row["path"] for row, _ in prepared], "backup": str(backup)}
+    _write_reviewed_files([(document, raw) for _, document, raw in prepared], backup, "refactor")
+    return {"root": snapshot.root, "files": [path for path, _, _ in prepared], "backup": str(backup)}
+
+
+def undo_reviewed_patch(root, receipt):
+    from .core import app_dir
+    from .workspace import Document
+
+    backup = Path(receipt["backup"]).resolve()
+    if backup.parent != (app_dir() / "backups").resolve():
+        raise ValueError("The recovery backup is outside the application backup folder.")
+    metadata = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
+    if Path(metadata["root"]) != root or receipt["root"] != str(root):
+        raise ValueError("This patch was applied in a different workspace.")
+    if [row["path"] for row in metadata["files"]] != receipt["files"]:
+        raise ValueError("The recovery backup does not match the applied patch.")
+    prepared = []
+    for index, row in enumerate(metadata["files"]):
+        document = Document(_reviewed_path(root, row["path"]))
+        if document.digest != row["after_sha256"]:
+            raise ValueError(f"{row['path']} changed after Apply. Review its history before restoring it.")
+        original = backup / f"{index}.original"
+        if original.is_symlink():
+            raise ValueError("The recovery backup uses a redirected path.")
+        raw = original.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != row["before_sha256"]:
+            raise ValueError(f"The recovery backup for {row['path']} is damaged.")
+        prepared.append((document, raw))
+    _write_reviewed_files(prepared, backup, "undo refactor")
 

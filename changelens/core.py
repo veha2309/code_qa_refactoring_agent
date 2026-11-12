@@ -200,12 +200,17 @@ def module_name(path: str) -> str:
     return ".".join(parts)
 
 
-def index_repository(root: Path, cancel: Event | None = None, progress: Callable = lambda *_: None) -> Snapshot:
+def index_repository(root: Path, cancel: Event | None = None, progress: Callable = lambda *_: None,
+                     *, previous: Snapshot | None = None) -> Snapshot:
     root = root.resolve()
     if not root.is_dir():
         raise ValueError("Choose an existing repository folder")
     hashes = fingerprint(root, cancel)
     profile=project_profile(root,hashes); profile["config_paths"]=[path for path in hashes if is_config(path)]
+    if (previous and previous.root == str(root) and previous.hashes == hashes
+            and previous.profile == profile and previous.revision == revision(root)):
+        checkpoint(cancel)
+        return previous
     symbols, calls, imports, warnings = {}, [], {}, []
     sources = {}; units={}; definitions={}
     warnings.extend(profile["warnings"])
@@ -318,10 +323,11 @@ def index_repository(root: Path, cancel: Event | None = None, progress: Callable
     return Snapshot(str(root), rev, hashes, symbols, edges, warnings, sid,profile)
 
 
-def ensure_fresh(snapshot: Snapshot):
+def ensure_fresh(snapshot: Snapshot, cancel: Event | None = None):
     root = Path(snapshot.root)
-    if revision(root) != snapshot.revision or fingerprint(root) != snapshot.hashes:
-        raise ValueError("Repository changed since indexing. Reindex before generating a patch.")
+    checkpoint(cancel)
+    if revision(root) != snapshot.revision or fingerprint(root, cancel) != snapshot.hashes:
+        raise ValueError("Repository changed since indexing. Refresh saved-source analysis and try again.")
 
 
 def save_snapshot(snapshot: Snapshot):
@@ -355,7 +361,7 @@ def changed_symbols(snapshot: Snapshot, cancel: Event | None = None) -> dict:
         if path in snapshot.hashes and snapshot.hashes[path] not in {"oversized", "unreadable"}:
             current = decode_source((root / path).read_bytes(),path)
         status = "untracked addition" if path in untracked else ("deleted" if not (root / path).exists() else "modified" if old else "added")
-        files.append({"path": path, "status": status,
+        files.append({"path": path, "status": status,"before":old,"after":current,
                       "diff": "".join(difflib.unified_diff(old.splitlines(True), current.splitlines(True),
                                                            fromfile="a/" + path, tofile="b/" + path))})
         if is_config(path):
@@ -390,16 +396,17 @@ def changed_symbols(snapshot: Snapshot, cancel: Event | None = None) -> dict:
         names_by_module = {}
         for sid, s in all_symbols.items():
             names_by_module.setdefault(f"{module_name(s.path)}.{s.qualname}", []).append(sid)
-        for s in snapshot.symbols.values():
-            if language_for(s.path)!="python":continue
+        paths = dict.fromkeys(s.path for s in snapshot.symbols.values() if language_for(s.path) == "python")
+        for path in paths:
+            checkpoint(cancel)
             try:
-                _, calls, bindings = parse_file(s.path, decode_source((root / s.path).read_bytes()))
+                _, calls, bindings = parse_file(path, decode_source((root / path).read_bytes(), path))
             except (SyntaxError, OSError, UnicodeError):
                 continue
             for caller, expression, line in calls:
-                if caller != s.id:
+                if caller not in snapshot.symbols:
                     continue
-                targets = [f"{module_name(s.path)}.{expression}"]
+                targets = [f"{module_name(path)}.{expression}"]
                 for owner, alias, target, level in bindings:
                     if not level and owner in (None, caller) and (expression == alias or expression.startswith(alias + ".")):
                         targets.append(target + expression[len(alias):])

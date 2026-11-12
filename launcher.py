@@ -2,6 +2,10 @@
 import sys
 
 if __name__ == "__main__":
+    if len(sys.argv)>2 and sys.argv[1]=='--self-test-ollama-languages':
+        from pathlib import Path
+        from changelens.ollama_smoke import run
+        raise SystemExit(run(Path(sys.argv[2])))
     if len(sys.argv) > 1 and sys.argv[1] == "--demo-worker":
         if sys.stdout is None:
             sys.stdout = open(sys.argv[3] + ".stdout", "w", encoding="utf-8")
@@ -23,6 +27,14 @@ if __name__ == "__main__":
     if len(sys.argv)>2 and sys.argv[1]=='--self-test-workflow':
         from pathlib import Path
         from changelens.refinement_smoke import run
+        raise SystemExit(run(Path(sys.argv[2])))
+    if len(sys.argv)>2 and sys.argv[1]=='--self-test-architecture':
+        from pathlib import Path
+        from changelens.architecture_smoke import run
+        raise SystemExit(run(Path(sys.argv[2])))
+    if len(sys.argv)>2 and sys.argv[1]=='--self-test-focus':
+        from pathlib import Path
+        from changelens.focus_smoke import run
         raise SystemExit(run(Path(sys.argv[2])))
     from changelens.workbench import main
     main()

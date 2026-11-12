@@ -28,7 +28,7 @@ def test_minimal_workbench_pickers_and_panels(tmp_path, monkeypatch):
     window.picker.query.setText("toggle project")
     assert window.picker.results.count()==1
     window.picker.activate()
-    assert window.project_panel.isHidden()
+    assert window.project_panel.isVisible()
     window.toggle_project(); window.toggle_outline()
     assert window.inspector.isVisible()
     window.toggle_outline(); window.navigate(1); window.navigate(0)
@@ -57,6 +57,8 @@ def test_recommendation_choices_and_stale_previews(tmp_path, monkeypatch):
     assert window.report_stale and window.patch_stale
     assert not window.apply_button.isEnabled() and not window.validate_button.isEnabled()
     assert not window.patch_button.isEnabled() and window.result_state.isVisible()
+    window.preview()
+    assert b"work in progress" not in (root/"a.py").read_bytes()
     window.save_current(); window.analyze_changes(); wait(app,window)
     # The first-open comparison point means no manual baseline is needed.
     assert not window.report_stale
@@ -125,6 +127,9 @@ def test_edit_diff_refactor_apply_workflow(tmp_path, monkeypatch):
     window.new_name.setText("invoice_total"); window.preview(); wait(app,window)
     assert len(window.patch["files"])==3
     app.processEvents(); window.grab().save("evaluation/workbench_refactor.png")
+    # Painting can dispatch the queued automatic preview. The real Apply button
+    # is disabled while that worker runs; wait for the same enabled state here.
+    wait(app,window)
     window.apply_patch(); wait(app,window)
     assert "invoice_total" in (root/"b.py").read_text()
     assert (tmp_path/"settings"/"ChangeLens"/"backups").is_dir()

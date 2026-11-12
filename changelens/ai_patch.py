@@ -3,13 +3,13 @@ import difflib
 import json
 from pathlib import Path
 from .core import decode_source,ensure_fresh
-from .syntax import grammar,parse_unit
+from .syntax import grammar,parse_unit,source_tree
 
 
 def exact_node(path,source,start,end):
     from tree_sitter import Parser
     from .languages import language_for
-    tree=Parser(grammar(language_for(path))).parse(source.encode('utf-8'))
+    tree=source_tree(path,source.encode('utf-8'))
     if language_for(path)=='dart':
         from .dart_adapter import declaration_at
         return declaration_at(tree.root_node,start,end)
@@ -58,8 +58,12 @@ def foreign_rewrite_patch(snapshot,symbol,answer):
     ensure_fresh(snapshot)
     value=json.loads(answer)
     if not isinstance(value,dict) or not isinstance(value.get('code'),str):raise ValueError('The model must return a JSON code proposal.')
-    proposed=value['code'].strip()
-    if not proposed or len(proposed)>5000:raise ValueError('The model proposal was empty or too large. Select a smaller declaration.')
+    snippet_mode=isinstance(value.get('_context_edits'),list)
+    if snippet_mode:
+        from .model_context import snippet_edits
+        original=symbol.source.replace('\r\n','\n');proposed=snippet_edits(original,original,value['_context_edits'])
+    else:proposed=value['code'].strip()
+    if not proposed or len(proposed)>(2_000_000 if snippet_mode else 5000):raise ValueError('The model proposal was empty or too large. Select a smaller declaration.')
     before=decode_source((Path(snapshot.root)/symbol.path).read_bytes(),symbol.path).replace('\r\n','\n')
     # Index byte spans refer to decoded source with its original newlines.
     current=parse_unit(symbol.path,before);matches=[s for s in current.symbols if s.id==symbol.id and s.start==symbol.start and s.source==symbol.source.replace('\r\n','\n')]

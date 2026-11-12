@@ -56,6 +56,42 @@ def test_focused_briefs_request_structured_bounded_output(monkeypatch):
     assert calls[-1][1]["options"]["num_ctx"]==2048
 
 
+def test_rewrite_requests_schema_and_retries_bad_json_once(monkeypatch):
+    import copy
+    client=LocalAI();calls=[]
+    proposal={'code':'function total(x) { return x + 1; }','explanation':'Simplify.'}
+    replies=iter(['{"replacement": "wrong field"}',json.dumps(proposal)])
+    monkeypatch.setattr(client,'activate',lambda *args:None)
+    def request(path,payload,cancel,timeout):
+        calls.append(copy.deepcopy(payload))
+        return {'message':{'content':next(replies)}}
+    monkeypatch.setattr(client,'request',request)
+    answer=client.assist('function total(x) { const y = x + 1; return y; }','Improve',rewrite=True,language='JavaScript')
+    assert json.loads(answer)==proposal and len(calls)==2
+    assert set(calls[0]['format']['required'])=={'code','explanation'}
+    assert calls[0]['format']['properties']['code']['type']=='string'
+    assert calls[0]['format']['additionalProperties'] is False
+    assert 'invalid format' in calls[1]['messages'][0]['content']
+    assert calls[0]['messages'][1]==calls[1]['messages'][1]
+    assert client.last_context_report['proposal_attempts']==2
+
+
+@pytest.mark.parametrize('answer',['{}','[]','{"code":42,"explanation":"x"}',
+    '{"code":"","explanation":"x"}','Here is the code: function x() {}'])
+def test_rewrite_rejects_invalid_proposals_after_bounded_retry(monkeypatch,answer):
+    client,calls=fake_client(monkeypatch,{'message':{'content':answer}})
+    with pytest.raises(ValueError,match='invalid code proposal twice'):
+        client.assist('function x() { return 1; }','Improve',rewrite=True,language='JavaScript')
+    assert len([p for path,p in calls if path=='/api/chat'])==2
+
+
+def test_rewrite_normalizes_only_a_single_json_fence(monkeypatch):
+    value={'code':'def total(x): return x + 1','explanation':'Simplify.'}
+    client,calls=fake_client(monkeypatch,{'message':{'content':'```json\n'+json.dumps(value)+'\n```'}})
+    assert json.loads(client.assist('def total(x): return x + 1','Improve',rewrite=True))==value
+    assert len([p for path,p in calls if path=='/api/chat'])==1
+
+
 def test_cloud_model_is_rejected_before_generation(monkeypatch):
     client=LocalAI(); calls=[]
     def request(path,payload=None,*args,**kwargs):calls.append(path); return {"remote_host":"cloud.example"}
@@ -186,6 +222,21 @@ def test_native_ai_rewrite_review_and_explicit_apply(tmp_path,monkeypatch):
     assert not window.new_name.isVisible() and "Remove a temporary" in window.refactor_context.text()
     assert (root/"a.py").read_text()==source
     window.apply_patch(); settled(app,window)
-    assert (root/"a.py").read_text()=="def total(value):\n    return value + 1\n"
+    assert (root/"a.py").read_text()=="def total(value):\n    return value + 1\n", (window.status.text(),window._pending_error,window.new_name.text())
     assert (tmp_path/"settings"/"ChangeLens"/"backups").is_dir()
     window.close(); app.processEvents()
+
+
+def test_failed_rewrite_clears_preparing_state_and_disables_apply(tmp_path,monkeypatch):
+    monkeypatch.setenv('LOCALAPPDATA',str(tmp_path/'settings'))
+    root=tmp_path/'project';root.mkdir();source='def total(value):\n    return value\n';(root/'a.py').write_text(source)
+    app=QApplication.instance() or QApplication([]);window=MainWindow();window.show();window.open_path(root);settled(app,window)
+    window.assistant_ready=True
+    def failed(*args,**kwargs):raise ValueError('No preview generated: invalid code proposal twice.')
+    monkeypatch.setattr(window.local_ai,'assist',failed)
+    window.suggest_rewrite();settled(app,window)
+    assert 'invalid code proposal' in window.refactor_context.text()
+    assert 'Preparing' not in window.refactor_context.text() and window.patch is None
+    assert not window.apply_button.isEnabled()
+    assert not window.patch_list.count() and (root/'a.py').read_text()==source
+    window.close();app.processEvents()

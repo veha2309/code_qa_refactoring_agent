@@ -96,7 +96,9 @@ def test_unicode_paths_and_stale(tmp_path):
         ensure_fresh(snapshot)
 
 
-def test_git_staged_unstaged_added_deleted(tmp_path):
+def test_git_staged_unstaged_added_deleted(tmp_path, monkeypatch):
+    from changelens import core
+
     write(tmp_path, "a.py", "def compute():\n    return 1\n")
     write(tmp_path, "removed.py", "def removed():\n    return 1\n")
     write(tmp_path, "caller.py", "from removed import removed\ndef caller():\n    return removed()\n")
@@ -106,7 +108,16 @@ def test_git_staged_unstaged_added_deleted(tmp_path):
     (tmp_path / "removed.py").unlink()
     write(tmp_path, "new.py", "def added():\n    return 3\n")
     snapshot = index_repository(tmp_path)
+    parsed = []
+    parse = core.parse_file
+
+    def observe(path, *args):
+        parsed.append(path)
+        return parse(path, *args)
+
+    monkeypatch.setattr(core, "parse_file", observe)
     changes = changed_symbols(snapshot)
+    assert parsed.count("caller.py") == 1
     assert set(changes["seeds"]) == {"a.py:compute", "removed.py:removed", "new.py:added"}
     assert any(f["status"] == "untracked addition" for f in changes["files"])
     impacted = impact_paths(snapshot, changes["seeds"], changes["historical_edges"])
