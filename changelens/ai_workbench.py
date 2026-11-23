@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QComboBox
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QComboBox, QLineEdit
 from .brief import BriefView, brief_markdown
 
 from .core import app_dir, index_repository, parse_file
@@ -70,6 +70,11 @@ class AIWorkbench:
         row.addStretch(); settings.addLayout(row)
         self.ai_readiness=QPushButton("Check presentation readiness"); self.ai_readiness.clicked.connect(self.check_presentation); settings.addWidget(self.ai_readiness)
         self.ai_settings_toggle.toggled.connect(self.ai_settings.setVisible); self.ai_settings.hide(); layout.addWidget(self.ai_settings)
+        question_row=QHBoxLayout()
+        self.agent_question=QLineEdit(); self.agent_question.setPlaceholderText("Ask about the focused function or a potential change…")
+        self.agent_question.setAccessibleName("Investigation question"); self.agent_question.setMaxLength(400); question_row.addWidget(self.agent_question,1)
+        self.agent_investigate=QPushButton("Investigate with AI"); self.agent_investigate.clicked.connect(self.investigate_question); question_row.addWidget(self.agent_investigate)
+        layout.addLayout(question_row)
         actions=QHBoxLayout(); self.ai_explain=QPushButton("Explain focused code"); self.ai_explain.clicked.connect(self.explain_code); actions.addWidget(self.ai_explain)
         self.ai_rewrite=QPushButton("Suggest a change"); self.ai_rewrite.clicked.connect(self.suggest_rewrite); actions.addWidget(self.ai_rewrite)
         self.ai_review=QPushButton('Review focused code');self.ai_review.clicked.connect(self.review_code);actions.addWidget(self.ai_review)
@@ -126,13 +131,14 @@ class AIWorkbench:
         if self.ai_worker:return
         if kind!="completion":self.ai_status.setText(message);self.ai_status.show()
         self.ai_cancel.show()
-        for button in (self.ai_connect,self.ai_download,self.assistant_download,self.ai_explain,self.ai_rewrite,self.ai_review,self.ai_readiness):button.setEnabled(False)
+        for button in (self.ai_connect,self.ai_download,self.assistant_download,self.ai_explain,self.ai_rewrite,self.ai_review,self.ai_readiness,self.agent_investigate):button.setEnabled(False)
         worker=Worker(task,self); self.ai_worker=worker; self.ai_job_kind=kind; result={};self.refresh_actions()
         epoch=getattr(self,'_workspace_epoch',0)
+        worker.message.connect(self.ai_status.setText)
         worker.done.connect(lambda value:result.update(value=value)); worker.failed.connect(lambda error:result.update(error=error))
         def finished():
             self.ai_worker=None; self.ai_job_kind=None; worker.deleteLater(); self.ai_cancel.hide()
-            for button in (self.ai_connect,self.ai_download,self.assistant_download,self.ai_explain,self.ai_rewrite,self.ai_review,self.ai_readiness):button.setEnabled(True)
+            for button in (self.ai_connect,self.ai_download,self.assistant_download,self.ai_explain,self.ai_rewrite,self.ai_review,self.ai_readiness,self.agent_investigate):button.setEnabled(True)
             if epoch!=getattr(self,'_workspace_epoch',0) and kind!='connect':
                 if kind=="lld_review" and on_error:on_error("The project changed. Open a new preview in Design.")
                 self.refresh_actions()
@@ -239,6 +245,30 @@ class AIWorkbench:
                 if shown:self.status.setText("Local AI suggestion · Tab to accept · Escape to dismiss")
         language=language_for(document.path)
         self.start_ai(lambda cancel,progress:self.local_ai.complete(code,offset,pack_context(),cancel,language),completed,"Generating a local code completion…",kind="completion")
+
+    def investigate_question(self):
+        question=self.agent_question.text().strip()
+        if not question:
+            self.ai_status.setText("Enter a question, then choose Investigate with AI."); return
+        if not self.require_assistant(self.investigate_question):return
+        try:editor,document,symbol,_=self.ai_selection()
+        except ValueError as exc:self.ai_status.setText(str(exc));return
+        if not symbol or not self.snapshot or symbol.id not in self.snapshot.symbols:
+            self.ai_status.setText("Place the cursor inside a saved, indexed function first.");return
+        if any(e.document().isModified() for e in self.documents):
+            self.ai_status.setText("Save your open edits and refresh analysis before investigating.");return
+        snapshot=self.snapshot; symbol_id=symbol.id; root=snapshot.root
+        self.ai_context_label.setText("Investigation · "+symbol_id)
+        self.ai_answer.clear()
+        from .investigation_agent import investigate, format_investigation
+        def task(cancel,progress):
+            return investigate(self.local_ai,snapshot,symbol_id,question,cancel,progress)
+        def completed(result):
+            if not self.snapshot or self.snapshot.root!=root or self.snapshot.id!=snapshot.id or any(e.document().isModified() for e in self.documents):
+                self.ai_status.setText("The project changed; the investigation was discarded.");return
+            self.ai_answer.setPlainText(format_investigation(result))
+            self.ai_status.setText("Investigation ready · model interpretation and static test candidates · no tests run.")
+        self.start_ai(task,completed,"Gathering source evidence…",kind="investigation")
 
     def explain_code(self):
         if not self.require_assistant(self.explain_code):return

@@ -97,7 +97,7 @@ def click_code(editor, text):
     QTest.mouseClick(editor.viewport(), Qt.MouseButton.LeftButton, pos=editor.cursorRect(cursor).center())
 
 
-def test_click_variable_refactors_in_editor_and_undoes(tmp_path, workbench):
+def test_explicit_variable_refactor_in_editor_and_undoes(tmp_path, workbench):
     root = tmp_path / "project"
     source = "def total(amount):\n    subtotal = amount\n    return subtotal + 1\n# comment_word\n"
     write(root, "app.py", source)
@@ -111,6 +111,8 @@ def test_click_variable_refactors_in_editor_and_undoes(tmp_path, workbench):
     click_code(editor, "comment_word")
     assert window.inline_refactor is None
     click_code(editor, "subtotal")
+    assert window.inline_refactor is None
+    QTest.keyClick(editor, Qt.Key.Key_Period, Qt.KeyboardModifier.ControlModifier)
     panel = window.inline_refactor
     assert panel and panel.isVisible() and panel.rename.isVisible()
     assert editor.hasFocus()
@@ -129,6 +131,7 @@ def test_click_variable_refactors_in_editor_and_undoes(tmp_path, workbench):
     assert window.pages.currentIndex() == 0 and editor.toPlainText() == source
     assert (root / "app.py").read_bytes() == source.encode()
     click_code(editor, "total")
+    QTest.keyClick(editor, Qt.Key.Key_Period, Qt.KeyboardModifier.ControlModifier)
     panel = window.inline_refactor
     panel.new_name.setText("invoice_total")
     panel.rename.click()
@@ -149,6 +152,8 @@ def test_click_javascript_function_previews_local_ai_in_editor(tmp_path, monkeyp
     window.pages.finish_transition()
     editor = window.current_editor()
     click_code(editor, "second")
+    assert window.inline_refactor is None
+    QTest.keyClick(editor, Qt.Key.Key_Period, Qt.KeyboardModifier.ControlModifier)
     panel = window.inline_refactor
     assert panel and panel.rename.isVisible() and panel.improve.isVisible()
 
@@ -668,3 +673,53 @@ def test_live_qa_model_and_test_runner(tmp_path, monkeypatch, workbench, case):
     idle(app, window)
     assert (root / path).read_bytes() == original, (window.status.text(), window.banner.text())
     assert not clean_findings and "no findings" in clean_status.lower(), (clean_status, clean_findings)
+
+
+def test_retail_sample_preserves_old_and_current_working_copies(tmp_path, monkeypatch):
+    import changelens.workbench as workbench_module
+
+    monkeypatch.setattr(workbench_module, "app_dir", lambda: tmp_path)
+    old = tmp_path / "sample-project"
+    old.mkdir()
+    (old / "invoice.py").write_text("old personal edits", encoding="utf-8")
+
+    class SampleTarget:
+        def open_path(self, path, *, on_open=None):
+            self.path = path
+
+    target = SampleTarget()
+    MainWindow.open_sample(target)
+    assert target.path == tmp_path / "retail-sample-project"
+    assert (target.path / "pricing.py").is_file()
+    assert (old / "invoice.py").read_text(encoding="utf-8") == "old personal edits"
+    invoice = target.path / "invoice.py"
+    invoice.write_text("new personal edits", encoding="utf-8")
+    MainWindow.open_sample(target)
+    assert invoice.read_text(encoding="utf-8") == "new personal edits"
+
+
+def test_ai_investigation_workflow_displays_evidence_and_candidates(tmp_path, monkeypatch, workbench):
+    root = tmp_path / "agent-project"
+    write(root, "calc.py", "def total(amount):\n    return amount * 2\n")
+    write(root, "test_calc.py", "from calc import total\ndef test_total(): assert total(2) == 4\n")
+    app, window = workbench
+    window.open_path(root)
+    idle(app, window)
+    window.navigate(0)
+    window.pages.finish_transition()
+    editor = window.current_editor()
+    click_code(editor, "total")
+    window.assistant_ready = True
+    monkeypatch.setattr(window.local_ai, "related_context_budget", lambda: 768)
+    monkeypatch.setattr(window.local_ai, "assist", lambda *args, **kwargs: json.dumps(
+        {"summary": "The function doubles the amount.", "uncertainty": "None identified.",
+         "verification": ["Run the linked test."]}))
+    window.open_brief()
+    window.agent_question.setText("What does this function do?")
+    window.agent_investigate.click()
+    idle(app, window)
+    result = window.ai_answer.toPlainText()
+    assert "The function doubles the amount" in result
+    assert "test_calc.py:test_total" in result
+    assert "not executed" in result
+    assert "Source context supplied" in result

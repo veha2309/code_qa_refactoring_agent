@@ -858,7 +858,7 @@ class MainWindow(InlineRefactorWorkbench,QAWorkbench,AIWorkbench,QMainWindow):
 
     def open_sample(self, *, on_open=None, practice=False):
         import shutil
-        root=app_dir()/("refactor-practice" if practice else "sample-project")
+        root=app_dir()/("refactor-practice" if practice else "retail-sample-project")
         root.mkdir(parents=True,exist_ok=True)
         for filename in json.loads((resources()/"demo_manifest.json").read_text(encoding="utf-8")):
             target=root/filename

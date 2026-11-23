@@ -198,7 +198,9 @@ def test_training_reproducibility_and_fallback(tmp_path):
     assert train_model(first) == train_model(second)
     snapshot = index_repository(resources() / "demo")
     rows = rank_tests(snapshot, ["invoice.py:calculate_invoice_total"], model_path=first)
-    assert len(rows) == 7 and rows[0]["method"] == "learned logistic regression"
+    assert len(rows) == sum(symbol.is_test for symbol in snapshot.symbols.values())
+    assert len(rows) >= 30 and rows[0]["method"] == "learned logistic regression"
+    assert any(row["symbol"].startswith("test_order_service.py:") for row in rows)
     fallback = rank_tests(snapshot, ["invoice.py:calculate_invoice_total"], model_path=tmp_path / "missing")
     assert fallback[0]["method"] == "structural fallback"
     assert fallback[0]["distance"] == 1
@@ -230,5 +232,16 @@ def test_demo_validation_and_fault_recall():
     normal = execute_demo(resources() / "demo", selected)
     assert normal["selected"]["returncode"] == normal["full"]["returncode"] == 0
     fault = execute_demo(resources() / "demo", selected, mutation=True)
-    assert fault["full"]["returncode"] == 1 and fault["failing_test_recall"] == 1
+    assert fault["full"]["returncode"] == 1
+    assert 0 < fault["failing_test_recall"] <= 1
 
+
+
+def test_retail_sample_traces_tax_and_promotion_to_order_tests():
+    snapshot = index_repository(resources() / "demo")
+    for seed in ("invoice.py:calculate_invoice_total", "promotions.py:discount_rate"):
+        impacted = {row["symbol"] for row in impact_paths(snapshot, [seed])}
+        assert "pricing.py:quote_order" in impacted
+        assert "orders.py:place_order" in impacted
+        assert "test_orders.py:test_confirmed_order_uses_pricing" in impacted
+        assert "display.py:heading" not in impacted

@@ -26,7 +26,7 @@ code behind a suggestion. Use **Preview fix** on a possible bug inside a functio
 proposed edit. Compare **Current code** and **Proposed edit** before choosing **Apply this fix**, then run the linked tests.
 The Review screen keeps those tests available even if the fix restores the previous version.
 
-In **Editor**, click a name to rename it, or select code to choose **Extract function** or
+In **Editor**, place the cursor on a name and press **Ctrl+.** to request a rename, or select code and use the right-click menu to choose **Extract function** or
 **Extract constant** (**Extract variable** in Python). Rename and extract work in Python,
 JavaScript, JSX, TypeScript, and TSX. If there are unsaved changes in the file, use **Save file and
 keep selection** in the panel. The file picker shows each affected diff, and you can apply or undo
@@ -85,7 +85,7 @@ The existing scratch-trained logistic model still ranks tests. The optional codi
 
 ## Editor details
 
-1. Choose **File → Open folder** (**Ctrl+O**) for your own repository, or **Try a sample** for an editable copy under `%LOCALAPPDATA%\ChangeLens\sample-project`. Existing sample edits are preserved.
+1. Choose **File → Open folder** (**Ctrl+O**) for your own repository, or **Try a sample** for an editable copy under `%LOCALAPPDATA%\ChangeLens\retail-sample-project`. Existing sample edits are preserved.
 2. Use the file explorer to open files or select a function. Tabs show an unsaved marker when modified.
 3. Press **Ctrl+Space** for local Python completions. Suggestions also appear after a dot or an identifier prefix. Enter/Tab accepts the selected item. Completion is static Python intelligence from Jedi, not LLM text generation.
 4. For Python, press **F12** to follow a resolvable definition within the workspace. Right-click the editor for completion and refactoring commands.

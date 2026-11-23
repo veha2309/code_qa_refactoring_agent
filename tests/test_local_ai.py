@@ -155,8 +155,9 @@ def test_ghost_completion_tab_escape_and_single_undo():
     editor.set_code("def total(value):\n    return "); editor.moveCursor(QTextCursor.MoveOperation.End)
     assert editor.offer_ghost("value + 1\n")
     assert editor.toPlainText().endswith("return ")
+    assert editor.ghost_text == "value + 1"
     QTest.keyClick(editor,Qt.Key.Key_Tab)
-    assert editor.toPlainText().endswith("return value + 1\n")
+    assert editor.toPlainText().endswith("return value + 1")
     editor.undo(); assert editor.toPlainText().endswith("return ")
     editor.offer_ghost("value"); QTest.keyClick(editor,Qt.Key.Key_Escape)
     assert not editor.ghost_text and editor.toPlainText().endswith("return ")
@@ -240,3 +241,30 @@ def test_failed_rewrite_clears_preparing_state_and_disables_apply(tmp_path,monke
     assert not window.apply_button.isEnabled()
     assert not window.patch_list.count() and (root/'a.py').read_text()==source
     window.close();app.processEvents()
+
+
+def test_investigation_gathers_context_and_separates_unrun_tests():
+    import json
+    from changelens.core import index_repository
+    from changelens.investigation_agent import investigate, format_investigation
+    from changelens.ranking import resources
+
+    class FakeModel:
+        def related_context_budget(self): return 768
+        def assist(self, code, instruction, context, **kwargs):
+            assert "calculate_invoice_total" in code
+            assert "do not guess" in instruction
+            assert "Related saved-source" in context
+            return json.dumps({"summary": "Tax is calculated from the supplied rate.",
+                               "uncertainty": "The requested change is not specified.",
+                               "verification": ["Run the linked tests."]})
+
+    snapshot = index_repository(resources() / "demo")
+    result = investigate(FakeModel(), snapshot, "invoice.py:calculate_invoice_total",
+                         "What could a tax change affect?")
+    assert "pricing.py:quote_order" in result["impacted"]
+    assert "test_orders.py:test_confirmed_order_uses_pricing" in result["tests"]
+    report = format_investigation(result)
+    assert "Linked test candidates (not executed)" in report
+    assert "Source context supplied to the model" in report
+    assert "requested change is not specified" in report

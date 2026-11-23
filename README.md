@@ -19,10 +19,12 @@ After setup, you can also double-click **Start Change Lens.cmd**. Setup creates 
 
 1. Press **Ctrl+Shift+P**, then choose **Project: Open sample**. This opens an editable copy of the invoice project. You can also click **Open** and choose your own project folder.
 2. Open `invoice.py` and place the cursor inside `calculate_invoice_total`. In **Review**, choose **Review function**. Open **Lens** to follow the recorded impact paths and choose **Linked tests** to inspect the candidates.
-3. In **Editor**, click `subtotal` to open the refactor panel. Enter a new name, preview the diff, then choose **Apply refactor**. The panel offers **Undo refactor** after a successful apply. Select an expression or block to preview an extraction.
+3. In **Editor**, place the cursor on `subtotal` and press **Ctrl+.** to request a rename. Enter a new name and preview the diff before applying it. Select an expression or block and use the right-click menu to request an extraction.
 4. Save an edit and choose **Review changes** to compare saved source against Git HEAD or the recorded first-open baseline. Use **Design** to inspect source structure and supported feature flows.
 
 Run tests only in repositories you trust. Choose the project interpreter or test tooling before running the selected set. Test results are recorded separately from static recommendations.
+
+The expanded retail sample includes catalogue, promotion, stock, delivery, pricing, order, reporting and return flows, with 34 tests. See [the panel demonstration guide](DEMO_GUIDE.md) for a walkthrough and its connection to the missing-source-context research. It opens in a new `retail-sample-project` working copy; previous sample edits are preserved.
 
 ## Language coverage
 
@@ -34,6 +36,10 @@ Run tests only in repositories you trust. Choose the project interpreter or test
 | Java, C#, Go, Rust | Conservative file, module, and package relationships | Test recommendations. |
 
 Optional model explanations and reviewed rewrite proposals are available across the indexed languages. Dependency links indicate potential impact. Dynamic dispatch, runtime routing, dependency injection, and other relationships can remain unresolved. See [analysis boundaries](evaluation/MULTILANGUAGE.md) and the [user guide](USER_GUIDE.md).
+
+## AI investigation
+
+With the local review model connected, focus a saved function and open **More → Tools → Code notes**. Ask a question and choose **Investigate with AI**. The guided workflow gathers bounded saved-source context and potential impact paths, asks the model for an answer and uncertainty, and lists linked test candidates. Inspect the displayed context and Lens evidence; the action does not execute tests, and neither static links nor the model's missing-context assessment are guaranteed complete.
 
 ## Optional local coding models
 
