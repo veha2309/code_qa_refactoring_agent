@@ -1,4 +1,23 @@
 {
+  "catalog.py": "c8fbcfa11a9a8b07437b9d19a42bab292de4fd50382e90557e73dfffd5a45f9e",
+  "delivery.py": "d50e3187970a18d9a2747a0db31d73e7ddb0ff10e0f07a6baba77caf0fe4cefd",
+  "display.py": "6b96de4207adc1240a33e7dfb0e875f598b5cdeb2701ce4b668ebc461c74e2ba",
   "invoice.py": "ef9ce1ad6fcca57e38a56cc317f61805858072d4245cedad9464e7123784affe",
-  "test_invoice.py": "4c1799284d97958766a52aa502bb0576ad4b577116ca3476f1dcc05e20773a02"
+  "order_service.py": "fe2bad71d03587e46291457907b949965f4b2792160f9c07927921e181532ee9",
+  "orders.py": "4f14de455553dcfffdd685db6308825b97bf2eba76925199c1456fd80ce41b8c",
+  "pricing.py": "0264837ef98118f4334bc52b1a24dfec1f277d397b1d8cf2a93f278ddc920de2",
+  "promotions.py": "a75810926fb76b919ebce9455ab5386d801f17a1c661dc06799e4f31f89bb6da",
+  "reports.py": "c3cd5f429662e0cce0cd73753f2ec466b66a1c922e8d77edcfb380d24465737c",
+  "returns.py": "ef5e67fbfa2126f3863beefe369f4c2347fcc48efc34b95fae9c8141ff86fd82",
+  "stock.py": "c785a7bc8cf506923dc9caa2740b3bdd43a7075300b188aab6c16487fe9e1f01",
+  "test_catalog.py": "8db92ce6a2439426dcb93c0bcd182597a0c2c4de6456441935139dd836db17f4",
+  "test_delivery.py": "eccb32ff0e144841d9844c6664154058cb37aa8a0da37c4a32983662d5315551",
+  "test_display.py": "e6b08365bd5941498829804aff141d6ac1608f182eaac646dfef36221861fd03",
+  "test_invoice.py": "4c1799284d97958766a52aa502bb0576ad4b577116ca3476f1dcc05e20773a02",
+  "test_order_service.py": "a44f38cfb15c9c792a5bcd8ace2c076b8b8d040df858f45b320478e440611df3",
+  "test_orders.py": "ee877b253d973fafa93ef029eb3185320cf673021db442fe02533a0895099a39",
+  "test_pricing.py": "d83cb2bd3be00cdc2f78a66c7bd45160b1d06bf906b8bbf41b6c3d3ec011eca7",
+  "test_promotions.py": "77960af3afb41aae4c291d612fcb5aa70cbdbc05b6306ad07f6302b0c0831df7",
+  "test_reports_returns.py": "e73b7171a960d2efe710e48299e81dcf6b120e344f5f6a42f7096ec8183d57cb",
+  "test_stock.py": "c0987a736ec11bf5025cf0349f58666b9ac69fb354fcfd39b59c8aa482cd72fc"
 }

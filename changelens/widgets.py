@@ -301,7 +301,7 @@ class CodeEditor(QPlainTextEdit):
         cursor=self.textCursor()
         after=cursor.block().text().encode("utf-16-le")[cursor.positionInBlock()*2:].decode("utf-16-le")
         if self.isReadOnly() or not self.hasFocus() or cursor.hasSelection() or after.strip():return False
-        self.completer.popup().hide(); self.ghost_text="".join(value.splitlines(keepends=True)[:8])[:1000]; self.viewport().update()
+        self.completer.popup().hide(); self.ghost_text=value.split("\n", 1)[0].rstrip("\r")[:1000]; self.viewport().update()
         return bool(self.ghost_text)
 
     def accept_ghost(self):
@@ -482,44 +482,7 @@ class CodeEditor(QPlainTextEdit):
 
     def mousePressEvent(self,event):
         self.dismissRefactorRequested.emit()
-        self._refactor_press = (event.position().toPoint() if event.button()==Qt.MouseButton.LeftButton
-                                and not event.modifiers() else None)
         super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self,event):
-        super().mouseReleaseEvent(event)
-        start=getattr(self,"_refactor_press",None)
-        self._refactor_press=None
-        point=event.position().toPoint()
-        if start is None or event.button()!=Qt.MouseButton.LeftButton or self.isReadOnly():
-            return
-        if (start-point).manhattanLength()>=QApplication.startDragDistance():
-            selection=self.textCursor()
-            if selection.hasSelection():
-                self.refactorSelectionRequested.emit(selection.selectionStart(),selection.selectionEnd())
-            return
-        if self.textCursor().hasSelection():return
-        cursor=self.cursorForPosition(point)
-        block=cursor.block()
-        text=block.text()
-        for word in re.finditer(r"(?<![\w$])(?:[^\W\d]|\$)[\w$]*",text):
-            left=len(text[:word.start()].encode("utf-16-le"))//2
-            right=left+len(word.group().encode("utf-16-le"))//2
-            if not left<=cursor.positionInBlock()<=right:continue
-            cursor.setPosition(block.position()+left)
-            first=self.cursorRect(cursor)
-            cursor.setPosition(block.position()+right)
-            last=self.cursorRect(cursor)
-            if not (first.left()<=point.x()<last.left() and first.top()<=point.y()<=first.bottom()):
-                return
-            # Ignore keywords, comments and strings using the existing highlighter.
-            if keyword.iskeyword(word.group()) or any(
-                    item.start<=left<item.start+item.length
-                    and item.format.foreground().color().name() in {"#c678dd","#98c379","#7a8087","#7f8a90"}
-                    for item in block.layout().formats()):
-                return
-            self.refactorClicked.emit(block.position()+left,block.position()+right)
-            return
 
     def keyPressEvent(self, event):
         self.dismissRefactorRequested.emit()
@@ -580,12 +543,6 @@ class CodeEditor(QPlainTextEdit):
                 self.ai_timer.start()
             elif event.text() and (event.text().isalnum() and len(self.prefix()) >= 2 or event.text() == "."):
                 self.completion_timer.start()
-
-    def keyReleaseEvent(self, event):
-        super().keyReleaseEvent(event)
-        cursor=self.textCursor()
-        if event.key()==Qt.Key.Key_Shift and cursor.hasSelection() and not self.isReadOnly():
-            self.refactorSelectionRequested.emit(cursor.selectionStart(),cursor.selectionEnd())
 
     def contextMenuEvent(self, event):
         menu = self.createStandardContextMenu()
